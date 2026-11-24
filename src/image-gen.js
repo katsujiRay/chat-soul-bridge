@@ -6,7 +6,7 @@
  *   2. openai ：标准 OpenAI 兼容 /images/generations（支持 GPT Image / 硅基流动 FLUX / 各类兼容中转与本地代理）。
  *
  * 返回统一的 { ok: true, data: '<base64>', mimeType: 'image/png', model }，
- * 由上层直接通过 OneBot base64:// 发送到 QQ，避免外链防盗链或超时失效。
+ * 由上层直接通过 OneBot base64:// 发送到聊天窗口，避免外链防盗链或超时失效。
  */
 import { GoogleGenAI } from '@google/genai';
 

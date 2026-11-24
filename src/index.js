@@ -6,7 +6,7 @@
  *     -> 白名单/黑名单校验 + 实时写入 state/memory.db 与内存缓存
  *     -> 群聊触发判定（@ / 引用 / 人设关键词 / 随机冒泡 + 防多 Bot 互刷护栏）
  *     -> 按 chatKey 串行排队 -> 拼装时间/上下文/图片 -> 调用统一多模型客户端（src/llm.js）
- *     -> 拟人化分条延迟发送到 QQ + 落盘记忆库
+ *     -> 拟人化分条延迟发送到聊天窗口 + 落盘记忆库
  *
  * 同时运行定时冷场主动冒泡调度器（避开夜间免打扰时段，防连环刷屏）。
  */
@@ -53,7 +53,7 @@ import {
   recordRecentMessage,
 } from './memory.js';
 import { listPersonaReferenceImages, loadPersona } from './persona.js';
-import { markSyncHandled, syncMemoryAndCatchup, waitForQqReady } from './sync.js';
+import { markSyncHandled, syncMemoryAndCatchup, waitForClientReady } from './sync.js';
 import {
   configureTodos,
   ensureTodosFile,
@@ -78,7 +78,7 @@ const personaPath = resolveBotResourcePath(config.paths.personaFile || 'roles/pe
 const toolsPromptPath = config.paths.toolsPromptFile
   ? resolveBotResourcePath(config.paths.toolsPromptFile, ROOT, runtime.codeRoot)
   : '';
-const LOG_TAG = runtime.isSubBot ? `[qq-bridge:${runtime.botName}]` : '[qq-bridge]';
+const LOG_TAG = runtime.isSubBot ? `[chat-bridge:${runtime.botName}]` : '[chat-bridge]';
 
 function log(...args) {
   const t = new Date().toTimeString().slice(0, 8);
@@ -169,8 +169,8 @@ const imageGenConfig = resolveImageGenConfig(config);
 const executeTool = createToolExecutor({
   sendOneBot,
   log,
-  ownerQQ: config.ownerQQ,
-  botQQ: config.snowluma?.botQQ,
+  ownerId: config.ownerId,
+  botId: config.snowluma?.botId,
   trustedGroups: config.memoryPrivacy?.trustedGroups || [],
   privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
   denyGroups: config.deny?.groups || [],
@@ -261,7 +261,7 @@ function getToolsForChat(chatKey) {
     listPersonaReferenceImages(persona.referencePath, path.dirname(personaPath)).length > 0;
   return selectToolsForContext(tools, {
     chatKey,
-    ownerQQ: config.ownerQQ,
+    ownerId: config.ownerId,
     trustedGroups: config.memoryPrivacy?.trustedGroups || [],
     hasReferenceImages,
     hasImageGen: imageGenConfig.enabled === true,
@@ -304,7 +304,7 @@ function rememberMyMessageId(res) {
 }
 
 /**
- * 将长回复按换行拆分为 1~4 条 QQ 气泡短消息，并剥离常见 Markdown 加粗符号。
+ * 将长回复按换行拆分为 1~4 条 聊天消息气泡短消息，并剥离常见 Markdown 加粗符号。
  */
 function splitBurstMessages(text, maxParts = 4) {
   const cleaned = text
@@ -353,7 +353,7 @@ async function sendReply(event, text) {
     recordRecentMessage(chatKey, {
       message_id: msgId || 'self',
       time: formatNow().slice(11, 16),
-      user_id: String(config.snowluma.botQQ || ''),
+      user_id: String(config.snowluma.botId || ''),
       sender: `我·${botName}`,
       text: parts[i].slice(0, 120),
     });
@@ -362,7 +362,7 @@ async function sendReply(event, text) {
       scope: event.message_type === 'group' ? 'group' : 'private',
       groupId: event.message_type === 'group' ? event.group_id : null,
       messageId: msgId,
-      who: config.snowluma.botQQ,
+      who: config.snowluma.botId,
       whoName: botName,
       isSelf: true,
       isOwner: false,
@@ -375,7 +375,7 @@ async function sendReply(event, text) {
   return lastMsgId;
 }
 
-/** 下载 QQ 消息里的图片并编码为 base64（带超时与体积上限保护） */
+/** 下载 聊天消息里的图片并编码为 base64（带超时与体积上限保护） */
 async function downloadImage(url, maxBytes) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
@@ -392,7 +392,7 @@ async function downloadImage(url, maxBytes) {
 
 /** 解析 OneBot v11 消息段数组（提取纯文本、图片 URL、合并转发 ID、引用 ID 与 @ 标记/列表） */
 function parseMessage(event) {
-  const selfId = String(event.self_id || config.snowluma.botQQ || '');
+  const selfId = String(event.self_id || config.snowluma.botId || '');
   const textParts = [];
   const imageUrls = [];
   const forwardIds = [];
@@ -405,11 +405,11 @@ function parseMessage(event) {
       if (seg.type === 'text' && seg.data?.text) {
         textParts.push(seg.data.text);
       } else if (seg.type === 'at' && seg.data?.qq != null) {
-        const atQq = String(seg.data.qq);
-        if (atQq === selfId) {
+        const atUid = String(seg.data.qq);
+        if (atUid === selfId) {
           isAtMe = true;
-        } else if (/^\d+$/.test(atQq)) {
-          mentionedUserIds.push(atQq);
+        } else if (/^\d+$/.test(atUid)) {
+          mentionedUserIds.push(atUid);
         }
       } else if (seg.type === 'image' && seg.data?.url) {
         imageUrls.push(seg.data.url);
@@ -440,7 +440,7 @@ function parseMessage(event) {
 
 /**
  * 自动展开消息里的合并转发（调用 get_forward_msg），返回：
- *   - text       : 完整展开版（写入 state/memory.db 供 qq_recall 检索，同时直接送给模型阅读）
+ *   - text       : 完整展开版（写入 state/memory.db 供 chat_recall 检索，同时直接送给模型阅读）
  *   - compactText: 精简预览版（写入内存 recentBuffers，避免群聊上下文窗口被长转发撑爆）
  *   - imageUrls  : 合并转发内附带的图片 URL（合并进图片列表，让模型直接看清转发里的图）
  */
@@ -553,7 +553,7 @@ function isAllowedTarget(type, id) {
     const deny = new Set((config.deny?.private || []).map(String));
     if (deny.has(String(id))) return false;
     if (config.allowAllPrivate) return true;
-    const list = new Set([...(config.allow?.private || []), config.ownerQQ].filter(Boolean).map(String));
+    const list = new Set([...(config.allow?.private || []), config.ownerId].filter(Boolean).map(String));
     return list.has(String(id));
   }
   if (type === 'group') {
@@ -639,7 +639,7 @@ function checkGroupTrigger(
   chatKey = ''
 ) {
   const gKey = String(groupId);
-  const isOwner = Boolean(config.ownerQQ) && String(senderId) === String(config.ownerQQ);
+  const isOwner = Boolean(config.ownerId) && String(senderId) === String(config.ownerId);
   const isKnownBot =
     !isOwner &&
     (speaker?.isAiBot === true || (speaker?.role === 'known' && /(ai|bot|机器人)/i.test(String(speaker.tag || ''))));
@@ -818,14 +818,14 @@ function startProactiveSchedulers() {
   if (!config.proactive?.enabled) return;
   const targets = [];
 
-  if (config.proactive.privateEnabled !== false && config.ownerQQ) {
-    const key = `private:${config.ownerQQ}`;
+  if (config.proactive.privateEnabled !== false && config.ownerId) {
+    const key = `private:${config.ownerId}`;
     lastActivityAt.set(key, Date.now());
     targets.push(key);
     scheduleProactiveCheck(key, {
       message_type: 'private',
-      user_id: config.ownerQQ,
-      self_id: config.snowluma.botQQ,
+      user_id: config.ownerId,
+      self_id: config.snowluma.botId,
     });
   }
 
@@ -836,7 +836,7 @@ function startProactiveSchedulers() {
     scheduleProactiveCheck(key, {
       message_type: 'group',
       group_id: gid,
-      self_id: config.snowluma.botQQ,
+      self_id: config.snowluma.botId,
     });
   }
 
@@ -864,7 +864,7 @@ function scheduleNextTodoCheck(overrideWakeAtMs = 0) {
     clearTimeout(todoTimer);
     todoTimer = null;
   }
-  if (!config.ownerQQ || config.todos?.enabled === false) return;
+  if (!config.ownerId || config.todos?.enabled === false) return;
 
   const now = Date.now();
   const { dueItems, staleItems, nextWakeAtMs } = inspectTodoSchedule(now);
@@ -889,7 +889,7 @@ function scheduleNextTodoCheck(overrideWakeAtMs = 0) {
 }
 
 async function runTodoAlarmCheck() {
-  if (!config.ownerQQ) return;
+  if (!config.ownerId) return;
   if (!wsConnected) {
     // WS 尚未连通时延后 30s 重试，不丢失到期提醒
     scheduleNextTodoCheck(Date.now() + 30000);
@@ -898,11 +898,11 @@ async function runTodoAlarmCheck() {
 
   const now = Date.now();
   const { dueItems, staleItems } = inspectTodoSchedule(now);
-  const ownerKey = `private:${config.ownerQQ}`;
+  const ownerKey = `private:${config.ownerId}`;
   const pseudoEvent = {
     message_type: 'private',
-    user_id: Number(config.ownerQQ),
-    self_id: config.snowluma.botQQ,
+    user_id: Number(config.ownerId),
+    self_id: config.snowluma.botId,
   };
 
   // 1. 到点的定时提醒：立即私聊自然提醒，发完自动从待办数组删除
@@ -935,7 +935,7 @@ async function runTodoAlarmCheck() {
     });
   }
 
-  // 2. 超过 7 天的普通待办：避开夜间免打扰，温柔随口问一次“还要不要做”，等主人确认后再由 qq_todo done 删掉
+  // 2. 超过 7 天的普通待办：避开夜间免打扰，温柔随口问一次“还要不要做”，等主人确认后再由 chat_todo done 删掉
   if (staleItems.length > 0) {
     if (isQuietHour()) {
       scheduleNextTodoCheck(computeNextMorningMs());
@@ -952,7 +952,7 @@ async function runTodoAlarmCheck() {
         const prompt =
           `[当前时间: ${nowStr}] [场景：与主人私聊]\n${formatEmotionForPrompt()}\n` +
           `【以下待办已经放了超过 7 天还没划掉，不要擅自删，先随口问主人一句】\n${listText}\n` +
-          '（提示：轻松随口问一句主人这些事还要不要做、或者是不是已经搞定了，等他确认不做后再调 qq_todo done 删掉；简短自然 1~2 句就行）';
+          '（提示：轻松随口问一句主人这些事还要不要做、或者是不是已经搞定了，等他确认不做后再调 chat_todo done 删掉；简短自然 1~2 句就行）';
         let directSent = false;
         const reply = await llm.chat(ownerKey, {
           text: prompt,
@@ -974,7 +974,7 @@ async function runTodoAlarmCheck() {
 
 // ── 消息与拍一拍处理 ─────────────────────────────────────────────────────────
 async function handlePoke(event) {
-  const selfId = String(event.self_id || config.snowluma.botQQ || '');
+  const selfId = String(event.self_id || config.snowluma.botId || '');
   if (String(event.target_id) !== selfId) return;
   if (String(event.user_id) === selfId) return;
 
@@ -985,7 +985,7 @@ async function handlePoke(event) {
 
   const chatKey = isGroup ? `group:${event.group_id}` : `private:${event.user_id}`;
   touchActivity(chatKey);
-  if (isGroup && String(event.user_id) === String(config.ownerQQ || '')) {
+  if (isGroup && String(event.user_id) === String(config.ownerId || '')) {
     nonOwnerStreak.set(String(event.group_id), 0);
   }
 
@@ -996,14 +996,14 @@ async function handlePoke(event) {
     self_id: event.self_id,
   };
 
-  log(`收到拍一拍 ${chatKey} from QQ:${event.user_id}`);
+  log(`收到拍一拍 ${chatKey} from ID:${event.user_id}`);
   enqueue(chatKey, async () => {
     try {
       let directSent = false;
       const nowStr = formatNow();
-      const poker = resolveSpeakerIdentity(event.user_id, `QQ:${event.user_id}`, config, getPersona().name);
+      const poker = resolveSpeakerIdentity(event.user_id, `ID:${event.user_id}`, config, getPersona().name);
       const sceneTag = formatSceneTag(pseudoEvent, config, poker);
-      const prompt = `[当前时间: ${nowStr}] ${sceneTag}\n（系统事件：[${poker.label}(${event.user_id})] 拍了拍你。你可以自然回一句话，或者顺手调用 qq_send_poke 拍回去！）`;
+      const prompt = `[当前时间: ${nowStr}] ${sceneTag}\n（系统事件：[${poker.label}(${event.user_id})] 拍了拍你。你可以自然回一句话，或者顺手调用 chat_send_poke 拍回去！）`;
       const reply = await llm.chat(chatKey, {
         text: prompt,
         persistText: `[${nowStr.slice(11, 16)}] [${poker.label}] 拍了拍你`,
@@ -1020,13 +1020,13 @@ async function handlePoke(event) {
 }
 
 async function handleMessage(event) {
-  // 监听 OneBot 心跳/生命周期事件：捕获 QQ 离线->重新上线切换，自动重新触发记忆库同步门控
+  // 监听 OneBot 心跳/生命周期事件：捕获 离线->重新上线切换，自动重新触发记忆库同步门控
   if (event.post_type === 'meta_event') {
     if (event.meta_event_type === 'heartbeat' && event.status) {
-      if (event.status.online === false && qqOnline) {
-        qqOnline = false;
-        log('检测到 QQ 客户端离线，待重新登录后将自动同步离线记忆库');
-      } else if (event.status.online === true && !qqOnline && !syncRunning) {
+      if (event.status.online === false && clientOnline) {
+        clientOnline = false;
+        log('检测到 Chat 客户端离线，待重新登录后将自动同步离线记忆库');
+      } else if (event.status.online === true && !clientOnline && !syncRunning) {
         triggerOnlineSyncGate('heartbeat_online');
       }
     }
@@ -1036,7 +1036,7 @@ async function handleMessage(event) {
     return handlePoke(event);
   }
   if (event.post_type !== 'message') return;
-  if (String(event.user_id) === String(event.self_id || config.snowluma.botQQ)) return;
+  if (String(event.user_id) === String(event.self_id || config.snowluma.botId)) return;
 
   const targetId = event.message_type === 'group' ? event.group_id : event.user_id;
   if (!isAllowedTarget(event.message_type, targetId)) {
@@ -1069,7 +1069,7 @@ async function handleMessage(event) {
       : `group:${event.group_id}`;
   const senderName = event.sender?.card || event.sender?.nickname || String(event.user_id);
   const impScope = resolveImpressionScope(event, {
-    ownerQQ: config.ownerQQ,
+    ownerId: config.ownerId,
     trustedGroups: config.memoryPrivacy?.trustedGroups || [],
     privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
   });
@@ -1094,7 +1094,7 @@ async function handleMessage(event) {
     log('更新人物互动计数失败:', err?.message || err);
   }
 
-  // 先记入最近消息缓存 + 写入本地 SQLite 记忆库（哪怕这句没触发机器人，以后 qq_recall 也能翻到）
+  // 先记入最近消息缓存 + 写入本地 SQLite 记忆库（哪怕这句没触发机器人，以后 chat_recall 也能翻到）
   recordRecentMessage(chatKey, {
     message_id: String(event.message_id || ''),
     time: formatNow().slice(11, 16),
@@ -1121,8 +1121,8 @@ async function handleMessage(event) {
     matchedTopics = triggerRes?.matchedTopics || [];
     // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒
     if (!triggerReason && replyId && config.groupTrigger?.replyToMe !== false) {
-      const selfId = String(event.self_id || config.snowluma.botQQ || '');
-      const isOwner = String(event.user_id) === String(config.ownerQQ || '');
+      const selfId = String(event.self_id || config.snowluma.botId || '');
+      const isOwner = String(event.user_id) === String(config.ownerId || '');
       const maxStreak = Number(config.groupTrigger?.maxConsecutiveWithoutOwner ?? 2);
       const streak = nonOwnerStreak.get(String(event.group_id)) || 0;
       if (isOwner || streak < maxStreak) {
@@ -1142,7 +1142,7 @@ async function handleMessage(event) {
       who: event.user_id,
       whoName: senderName,
       isSelf: false,
-      isOwner: String(event.user_id) === String(config.ownerQQ || ''),
+      isOwner: String(event.user_id) === String(config.ownerId || ''),
       isTriggered: Boolean(triggerReason),
       text: text || '[图片]',
       ts: event.time ? Number(event.time) : Date.now() / 1000,
@@ -1176,8 +1176,8 @@ async function handleMessage(event) {
       // 主人私聊时：记录每日被动陪伴好感并注入当前好感/心情状态（绝不泄露给外部群聊）
       const isOwnerPrivate =
         event.message_type === 'private' &&
-        config.ownerQQ &&
-        String(event.user_id) === String(config.ownerQQ);
+        config.ownerId &&
+        String(event.user_id) === String(config.ownerId);
       const isTrustedGroup =
         event.message_type === 'group' && trustedGroupSet.has(String(event.group_id));
       if (isOwnerPrivate && config.emotion?.enabled !== false) {
@@ -1224,8 +1224,8 @@ async function handleMessage(event) {
             ...(config.memoryPrivacy?.privateMemoryGroups || []),
           ]),
         ].map((g) => `group:${g}`);
-      } else if ((isTrustedGroup || isPrivateMemoryGroup) && config.ownerQQ) {
-        crossChatKeys = [`private:${config.ownerQQ}`];
+      } else if ((isTrustedGroup || isPrivateMemoryGroup) && config.ownerId) {
+        crossChatKeys = [`private:${config.ownerId}`];
       }
       if (crossChatKeys.length > 0 && text) {
         const crossHits = findCrossChatRecentMatches(crossChatKeys, text, { maxHits: 2, maxChars: 180 });
@@ -1248,7 +1248,7 @@ async function handleMessage(event) {
           speakerId: event.user_id,
           quotedUserId: quotedMessage?.userId || '',
           mentionedUserIds,
-          botQQ: config.snowluma?.botQQ || '',
+          botId: config.snowluma?.botId || '',
           text,
           readScopes: impScope.readScopes,
           maxUsers: config.impressions?.injectMaxUsers ?? 2,
@@ -1328,7 +1328,7 @@ async function handleMessage(event) {
         },
       };
       // 发送给模型当轮使用带实时状态/群背景的完整 promptText；
-      // 落盘至 state/context.db 时只保留去噪后的本轮发言（防过期心情和重复群记录滚雪球污染上下文；全量消息仍完整保存在 state/memory.db 供 qq_recall 随时检索）
+      // 落盘至 state/context.db 时只保留去噪后的本轮发言（防过期心情和重复群记录滚雪球污染上下文；全量消息仍完整保存在 state/memory.db 供 chat_recall 随时检索）
       const persistLine = `[${nowStr.slice(11, 16)}] ${currentLine}`;
       const reply = await llm.chat(chatKey, {
         text: promptText,
@@ -1380,7 +1380,7 @@ async function handleMessage(event) {
 }
 
 // ── 上线确定性记忆库同步门控（返回 status: "success" 后再触发离线未读补回） ──
-let qqOnline = false;
+let clientOnline = false;
 let syncRunning = false;
 const liveMessageAt = new Map();
 
@@ -1398,12 +1398,12 @@ async function handleOfflineUnreadTarget(target, syncStartedAt) {
           message_type: 'group',
           group_id: target.groupId,
           user_id: target.userId,
-          self_id: config.snowluma.botQQ,
+          self_id: config.snowluma.botId,
         }
       : {
           message_type: 'private',
           user_id: target.userId,
-          self_id: config.snowluma.botQQ,
+          self_id: config.snowluma.botId,
         };
 
   enqueue(target.chatKey, async () => {
@@ -1422,8 +1422,8 @@ async function handleOfflineUnreadTarget(target, syncStartedAt) {
       if (
         target.scope === 'private' &&
         config.emotion?.enabled !== false &&
-        config.ownerQQ &&
-        String(target.userId) === String(config.ownerQQ)
+        config.ownerId &&
+        String(target.userId) === String(config.ownerId)
       ) {
         recordDailyPassiveInteraction();
         contextPrefix += `\n${formatEmotionForPrompt()}`;
@@ -1485,16 +1485,16 @@ async function triggerOnlineSyncGate(reason = 'ws_open') {
   const syncStartedAt = Date.now();
 
   try {
-    // 1. 探测等待 QQ 客户端真正在线（哪怕只开了 SnowLuma 还没登 QQ 也不会扑空）
-    const ready = await waitForQqReady(sendOneBot, {
+    // 1. 探测等待 Chat 客户端真正在线（哪怕只开了 SnowLuma 还没登 账号 也不会扑空）
+    const ready = await waitForClientReady(sendOneBot, {
       pollIntervalMs: config.startupCatchup?.onlinePollMs ?? 3000,
       maxWaitMs: 0,
       log,
       shouldStop: () => !wsConnected,
     });
     if (!ready.ok) return;
-    qqOnline = true;
-    log(`检测到 QQ 已在线 (QQ:${ready.userId}, 触发源:${reason})，开始收敛同步离线记忆库...`);
+    clientOnline = true;
+    log(`检测到 客户端已在线 (ID:${ready.userId}, 触发源:${reason})，开始收敛同步离线记忆库...`);
 
     // 2. 确定性收敛同步 + await 落盘 state/memory.db + 预热内存 recentBuffers
     const syncRes = await syncMemoryAndCatchup({
@@ -1565,7 +1565,7 @@ function connectSnowLuma() {
 
   ws.addEventListener('close', (ev) => {
     wsConnected = false;
-    qqOnline = false;
+    clientOnline = false;
     log(`SnowLuma 连接断开 (code=${ev.code})，${reconnectDelay / 1000}s 后重连...`);
     setTimeout(connectSnowLuma, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);

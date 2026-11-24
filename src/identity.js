@@ -1,8 +1,8 @@
 /**
- * 身份与场景认知模块（代码层按 QQ 号硬校验，防群名片冒充）
+ * 身份与场景认知模块（代码层按 账号硬校验，防群名片冒充）
  *
  * 设计目标：
- *   1. 按 QQ 号识别管理员（ownerQQ）、机器人自身（botQQ）、可选熟人名录（identity.knownUsers）与普通群友；
+ *   1. 按 账号识别管理员（ownerId）、机器人自身（botId）、可选熟人名录（identity.knownUsers）与普通群友；
  *   2. 给每条消息打上不可伪造的身份前缀（如「主人·昵称」「群友·昵称」），避免他人改群名片冒充管理员；
  *   3. 为每轮对话生成极简场景标签（管理员私聊 / 亲密小群 / 普通外部群），几乎零 token 负担。
  */
@@ -53,24 +53,24 @@ export function resolveAiBotEntry(config, userId) {
 }
 
 /**
- * 按 QQ 号解析发言人的权威身份标签（不信任昵称/群名片自称）
- *   - 静态硬校验：机器人自身(botQQ) / 管理员(ownerQQ) / 同群 AI 伙伴(identity.aiBots)
+ * 按 账号解析发言人的权威身份标签（不信任昵称/群名片自称）
+ *   - 静态硬校验：机器人自身(botId) / 管理员(ownerId) / 同群 AI 伙伴(identity.aiBots)
  *   - 动态熟人标签：来自 state/impressions.db 的 dynamicRelation（免改配置、热生效）
  * @returns {{ role: 'self'|'owner'|'known'|'member', tag: string, displayName: string, note: string, label: string, isAiBot: boolean }}
  */
 export function resolveSpeakerIdentity(userId, fallbackNickname, config, botName = 'Bot', { dynamicRelation = '' } = {}) {
   const uid = String(userId || '').trim();
   const cleanFallback = String(fallbackNickname || uid || '未知').trim();
-  const botQQ = String(config?.snowluma?.botQQ || '').trim();
-  const ownerQQ = String(config?.ownerQQ || '').trim();
+  const botId = String(config?.snowluma?.botId || '').trim();
+  const ownerId = String(config?.ownerId || '').trim();
   const ownerTitle = getOwnerTitle(config);
 
-  if (botQQ && uid === botQQ) {
+  if (botId && uid === botId) {
     const name = String(botName || 'Bot').trim();
     return { role: 'self', tag: '我', displayName: name, note: '', label: `我·${name}`, isAiBot: false };
   }
 
-  if (ownerQQ && uid === ownerQQ) {
+  if (ownerId && uid === ownerId) {
     const customName = String(config?.identity?.ownerNickname || '').trim();
     const displayName = customName || cleanFallback;
     return {

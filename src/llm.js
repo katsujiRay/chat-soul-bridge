@@ -838,8 +838,8 @@ function createAgyCliClient({
       return `- ${t.name}(${paramStr}): ${desc}`;
     });
     return (
-      `\n\n【QQ 桥接专属工具调用协议】\n` +
-      `当前会话允许你调用以下 QQ 工具。如果这一轮需要执行某个工具（如转发消息、查历史记忆、写日记、记待办、发表情包等），` +
+      `\n\n【Chat 桥接专属工具调用协议】\n` +
+      `当前会话允许你调用以下 Chat 工具。如果这一轮需要执行某个工具（如转发消息、查历史记忆、写日记、记待办、发表情包等），` +
       `请只输出一行或多行：[[TOOL_CALL:{"name":"工具名","args":{...}}]]（不要输出其他废话，也不要编造工具结果）；` +
       `桥接程序会自动执行并把真实结果发回给你，收到结果后再用自然口语回复。\n` +
       lines.join('\n')
@@ -934,7 +934,7 @@ function createAgyCliClient({
                 .join('\n')}`
             : '';
         payloadText =
-          `【你的角色设定与聊天规则（请全程严格保持人设，直接输出自然口语回复，绝不输出动作描写或 Markdown，不要执行任何修改/删除本地文件的命令）】\n${sys}${toolsBrief}${histBlock}\n\n【当前收到的 QQ 消息】\n${text || '（发了一张图片）'}${imgHint}`;
+          `【你的角色设定与聊天规则（请全程严格保持人设，直接输出自然口语回复，绝不输出动作描写或 Markdown，不要执行任何修改/删除本地文件的命令）】\n${sys}${toolsBrief}${histBlock}\n\n【当前收到的 聊天消息】\n${text || '（发了一张图片）'}${imgHint}`;
       } else {
         payloadText = `${text || '（发了一张图片）'}${imgHint}`;
       }
@@ -979,7 +979,7 @@ function createAgyCliClient({
               resultLines.push(`[${call.name}] ${jsonOut.slice(0, 2200)}`);
             }
           }
-          nextPayload = `【QQ 工具执行结果（请勿再复述工具名或 JSON，直接用自然人设口语回复用户；如还需继续调工具才输出 [[TOOL_CALL:...]]）】\n${resultLines.join('\n')}`;
+          nextPayload = `【Chat 工具执行结果（请勿再复述工具名或 JSON，直接用自然人设口语回复用户；如还需继续调工具才输出 [[TOOL_CALL:...]]）】\n${resultLines.join('\n')}`;
         }
 
         saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);

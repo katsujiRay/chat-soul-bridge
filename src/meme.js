@@ -2,7 +2,7 @@
  * 本地表情包百宝箱（默认目录 tools/meme/）
  *
  * 功能：
- *   - cacheMessageImages / resolveCachedImageUrl：缓存刚收到的 QQ 图片地址，供模型随时“偷图”；
+ *   - cacheMessageImages / resolveCachedImageUrl：缓存刚收到的 聊天图片地址，供模型随时“偷图”；
  *   - saveMemeFromUrl：下载图片 -> 通过魔数识别真实后缀 -> SHA-1 自动去重 -> 写入本地与 index.json；
  *   - listLocalMemes ：实时扫描目录（兼容用户手动拖入的图片）并支持按文件名/描述/标签筛选；
  *   - readMemeBase64 ：安全校验路径不越界后编码为 OneBot 通用的 base64:// 字符串发送。

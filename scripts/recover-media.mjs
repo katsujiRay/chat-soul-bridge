@@ -3,8 +3,8 @@
  *
  * 作用：
  *   扫描 state/memory.db 中已有的历史 [图片] 记录（不改写旧消息文字描述），
- *   通过 OneBot get_msg 尝试拉取尚未过期的 QQ 原图链接并归档至 state/media/，
- *   让历史图片在 QQ 链接失效前得以本地留存，日后 qq_view_memory_image 可随时调回查看。
+ *   通过 OneBot get_msg 尝试拉取尚未过期的 原图链接并归档至 state/media/，
+ *   让历史图片在 原图链接失效前得以本地留存，日后 chat_view_memory_image 可随时调回查看。
  */
 import '../src/bootstrap.js';
 import { execFile } from 'node:child_process';

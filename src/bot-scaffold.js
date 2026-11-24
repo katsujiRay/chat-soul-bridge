@@ -3,7 +3,7 @@
  *
  * 为每只 Bot 在 bots/<folderName>/ 下生成完整独立运行目录：
  *   - start.bat          ：双击直接单开该 Bot（自动回溯根目录共享 src/ 代码并加载本目录配置与 .env）
- *   - config.json        ：基于全量注释模板 config.example.json 生成，自动填入 SnowLuma 端口/Token/botQQ
+ *   - config.json        ：基于全量注释模板 config.example.json 生成，自动填入 SnowLuma 端口/Token/botId
  *   - .env               ：独立模型密钥文件（运行时自动继承根目录 .env 并由本文件覆盖同名项）
  *   - roles/persona.txt  ：独立角色人设卡模板（通用工具规范 roles/persona-tools-detail.txt 默认共用根目录）
  *   - tools/Diary/       ：独立每日 Markdown 日记目录
@@ -31,10 +31,10 @@ export function sanitizeBotFolderName(raw, fallback = 'bot') {
   return clean;
 }
 
-/** 优先按 QQ 账号生成 100% 跨平台安全的目录名（如 bot_1000000000），与 SnowLuma 的 onebot_<QQ>.json 一一对应 */
+/** 优先按 Chat 账号生成 100% 跨平台安全的目录名（如 bot_1000000000），与 SnowLuma 的 onebot_<ID>.json 一一对应 */
 export function resolveBotFolderName({ folderName = '', snowlumaBot = null } = {}) {
-  if (snowlumaBot?.botQQStr && /^\d{5,12}$/.test(String(snowlumaBot.botQQStr))) {
-    return `bot_${snowlumaBot.botQQStr}`;
+  if (snowlumaBot?.botIdStr && /^\d{5,12}$/.test(String(snowlumaBot.botIdStr))) {
+    return `bot_${snowlumaBot.botIdStr}`;
   }
   return sanitizeBotFolderName(folderName, 'bot1');
 }
@@ -56,7 +56,7 @@ export function buildBotStartBat(folderName) {
   ].join('\r\n');
 }
 
-/** 生成放在 bots/<folderName>/roles/persona.txt 的完整 QQ 活人感人设模板（不拷贝其他 Bot 的私人人设） */
+/** 生成放在 bots/<folderName>/roles/persona.txt 的完整 活人感人设模板（不拷贝其他 Bot 的私人人设） */
 function buildPersonaTemplate(botName = '') {
   const safeName = String(botName || '').trim();
   return [
@@ -69,9 +69,9 @@ function buildPersonaTemplate(botName = '') {
     '人设三视图/参考图：./assets/',
     '人设卡正文：',
     '',
-    '【说话节奏与 QQ 活人感（核心）】',
+    '【说话节奏与 活人感（核心）】',
     '1. **分条与短句节奏**：',
-    '   - 像真人在 QQ 里打字一样，一条消息只说一个完整意思，多数控制在 25 字以内，别一次塞一大段小作文。',
+    '   - 像真人在 聊天里打字一样，一条消息只说一个完整意思，多数控制在 25 字以内，别一次塞一大段小作文。',
     '   - 想连发 2~3 条时，用**换行符**分开（桥接会逐条隔一两秒发出去）。普通闲聊默认 1~2 条，最多不超过 3 条；不要为了分条而把同一句话硬拆成两半。',
     '   - 单条消息内部不要用空格假装停顿，中文短句用逗号或直接连写。',
     '2. **克制标点与符号**：',
@@ -106,7 +106,7 @@ export function scaffoldBotDirectory({
   botsRoot = path.join(CODE_ROOT, 'bots'),
   folderName,
   snowlumaBot = null,
-  ownerQQ = 0,
+  ownerId = 0,
   peerBots = [],
   initState = true,
   log = () => {},
@@ -146,13 +146,13 @@ export function scaffoldBotDirectory({
         ...(snowlumaBot.wsUrl ? { wsUrl: snowlumaBot.wsUrl } : {}),
         ...(snowlumaBot.httpUrl ? { httpUrl: snowlumaBot.httpUrl } : {}),
         ...(snowlumaBot.accessToken !== undefined ? { accessToken: snowlumaBot.accessToken } : {}),
-        ...(snowlumaBot.botQQ ? { botQQ: Number(snowlumaBot.botQQ) } : {}),
+        ...(snowlumaBot.botId ? { botId: Number(snowlumaBot.botId) } : {}),
       };
     }
 
-    const ownerNum = Number(ownerQQ || 0);
+    const ownerNum = Number(ownerId || 0);
     if (Number.isFinite(ownerNum) && ownerNum > 0) {
-      cfg.ownerQQ = ownerNum;
+      cfg.ownerId = ownerNum;
       cfg.allow = {
         ...(cfg.allow || {}),
         private: [ownerNum],
@@ -163,8 +163,8 @@ export function scaffoldBotDirectory({
     if (Array.isArray(peerBots) && peerBots.length > 0) {
       const aiBots = {};
       for (const peer of peerBots) {
-        const pq = String(peer.botQQ || '').trim();
-        if (!pq || pq === String(snowlumaBot?.botQQ || '')) continue;
+        const pq = String(peer.botId || '').trim();
+        if (!pq || pq === String(snowlumaBot?.botId || '')) continue;
         aiBots[pq] = peer.nickname || peer.folderName || `Bot_${pq}`;
       }
       if (Object.keys(aiBots).length > 0) {

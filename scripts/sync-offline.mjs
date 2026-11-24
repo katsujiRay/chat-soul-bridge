@@ -2,8 +2,8 @@
  * 离线记忆库同步脚本（npm run sync-memory）
  *
  * 作用：
- *   1. 检测 OneBot / QQ 客户端是否已真正登录在线（支持等待 QQ 登录）；
- *   2. 拉取白名单私聊与群聊最新消息并通过快照指纹收敛检测确认 QQ 离线同步完成；
+ *   1. 检测 OneBot / Chat 客户端是否已真正登录在线（支持等待 客户端登录）；
+ *   2. 拉取白名单私聊与群聊最新消息并通过快照指纹收敛检测确认 离线同步完成；
  *   3. 逐条 await 写入 state/memory.db，全部落盘成功后向 stdout 输出：
  *        {"status":"success","ok":true,...}
  *      并以退出码 0 结束，方便外部脚本或主程序拿到 success 信号后安全进入下一步。
@@ -15,7 +15,7 @@ import { loadConfig } from '../src/config.js';
 import { closeMemoryDbWriter, configureMemoryDb } from '../src/db.js';
 import { loadPersona } from '../src/persona.js';
 import { getBotRuntime, resolveBotResourcePath } from '../src/runtime.js';
-import { syncMemoryAndCatchup, waitForQqReady } from '../src/sync.js';
+import { syncMemoryAndCatchup, waitForClientReady } from '../src/sync.js';
 
 const runtime = getBotRuntime();
 const ROOT = runtime.dataRoot;
@@ -56,7 +56,7 @@ async function main() {
   const maxWaitMs = readArgInt('--wait-ms=', 60000);
   const count = readArgInt('--count=', config.startupCatchup?.preloadCount ?? 30);
 
-  const ready = await waitForQqReady(sendOneBot, {
+  const ready = await waitForClientReady(sendOneBot, {
     pollIntervalMs: 3000,
     maxWaitMs,
     log: (...a) => console.error('[sync-memory]', ...a),

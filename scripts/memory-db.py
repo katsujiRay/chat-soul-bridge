@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS msg (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     day         TEXT NOT NULL,
     scope       TEXT NOT NULL,          -- 'private' | 'group'
-    who         INTEGER NOT NULL,       -- 发送者 QQ 号
+    who         INTEGER NOT NULL,       -- 发送者 账号
     who_name    TEXT NOT NULL DEFAULT '',
     is_self     INTEGER NOT NULL DEFAULT 0,
     text        TEXT NOT NULL,

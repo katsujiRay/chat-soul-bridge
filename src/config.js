@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
     wsUrl: 'ws://127.0.0.1:3001/',
     httpUrl: 'http://127.0.0.1:3000',
     accessToken: '',
-    botQQ: 0,
+    botId: 0,
   },
   llm: {
     active: 'gemini',
@@ -25,7 +25,7 @@ export const DEFAULT_CONFIG = {
     providers: {},
   },
   proxyUrl: '',
-  ownerQQ: 0,
+  ownerId: 0,
   identity: {
     ownerTitle: '主人',
     ownerNickname: '',
@@ -193,8 +193,8 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
   const identity = mergeSection(DEFAULT_CONFIG.identity, raw.identity);
   if (Array.isArray(identity.aiBots)) {
     const map = {};
-    for (const qq of identity.aiBots) {
-      const k = String(qq || '').trim();
+    for (const uid of identity.aiBots) {
+      const k = String(uid || '').trim();
       if (k) map[k] = '';
     }
     identity.aiBots = map;
@@ -213,12 +213,17 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     imageGen.providers = stripCommentKeys(imageGen.providers);
   }
 
+  const snowluma = mergeSection(DEFAULT_CONFIG.snowluma, raw.snowluma);
+  if (!snowluma.botId && raw.snowluma?.botQQ) {
+    snowluma.botId = raw.snowluma.botQQ;
+  }
+
   return {
     ...raw,
-    snowluma: mergeSection(DEFAULT_CONFIG.snowluma, raw.snowluma),
+    snowluma,
     llm,
     proxyUrl: typeof raw.proxyUrl === 'string' ? raw.proxyUrl.trim() : '',
-    ownerQQ: raw.ownerQQ ?? DEFAULT_CONFIG.ownerQQ,
+    ownerId: raw.ownerId ?? raw.ownerQQ ?? DEFAULT_CONFIG.ownerId,
     identity,
     allowAllGroups: raw.allowAllGroups === true,
     allowAllPrivate: raw.allowAllPrivate === true,

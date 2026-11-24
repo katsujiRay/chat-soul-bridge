@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Lightweight multi-model QQ (OneBot v11) AI bridge with 4-layer local memory, multi-bot isolation, and role decoupling",
+  "description": "Lightweight multi-model Chat (OneBot v11) AI bridge with 4-layer local memory, multi-bot isolation, and role decoupling",
   "homepage": "https://github.com/katsujiRay/chat-soul-bridge",
   "repository": {
     "type": "git",

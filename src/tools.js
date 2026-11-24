@@ -3,15 +3,15 @@
  *
  * 包含六大类工具：
  *   1. 免费联网搜索与网页抓取（web_search / web_fetch，带内网 SSRF 拦截）
- *   2. 历史记忆库检索与近期记录（qq_recall / get_recent_messages / get_current_time）
+ *   2. 历史记忆库检索与近期记录（chat_recall / get_recent_messages / get_current_time）
  *   3. 角色形象参考图（get_self_image / send_self_image）
  *   4. 本地表情包百宝箱（meme_list / meme_send / meme_save）
- *   5. QQ 原生互动与跨聊传话（qq_reply_message / qq_dm_owner / qq_send_to_group / qq_send_poke / qq_get_forward_msg / qq_*_stickers）
+ *   5. Chat 原生互动与跨聊传话（chat_reply_message / chat_dm_owner / chat_send_to_group / chat_send_poke / chat_get_forward_msg / chat_*_stickers）
  *   6. 长期小本本与日记（memory_* / diary_*）
  *
  * 安全设计：
  *   - 陌生外部群（不在 memoryPrivacy.trustedGroups 中）在代码层强制隔离私聊、日记与小本本；
- *   - 跨群传话（qq_send_to_group）在代码层强制校验仅限主人私聊触发。
+ *   - 跨群传话（chat_send_to_group）在代码层强制校验仅限主人私聊触发。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -200,7 +200,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_recall',
+      name: 'chat_recall',
       description: '从本地 SQLite 历史记忆库（支持全文索引与向量检索）翻查以前聊过的聊天记录或日记。当对方提起“上次”“之前”“还记得吗”或你想确认以前说过什么时调用，不要凭空瞎编。',
       parameters: {
         type: 'object',
@@ -215,7 +215,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
           },
           who: {
             type: 'string',
-            description: '可选：限定某位发言者的 QQ 号。',
+            description: '可选：限定某位发言者的 账号。',
           },
           since: {
             type: 'string',
@@ -235,7 +235,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     {
       type: 'function',
       name: 'get_recent_messages',
-      description: '读取当前群聊或私聊最近收到的聊天记录（含 message_id、发送者、QQ号、内容），用于了解刚才大家聊了什么或找到要引用的消息。',
+      description: '读取当前群聊或私聊最近收到的聊天记录（含 message_id、发送者、账号、内容），用于了解刚才大家聊了什么或找到要引用的消息。',
       parameters: {
         type: 'object',
         properties: {
@@ -248,8 +248,8 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_reply_message',
-      description: '引用回复某一条具体的 QQ 消息。在群里人多、或者要精准回较早的一句话时使用。调用此工具会直接发消息到 QQ，不要在最终文本里再重复说一遍同样的话。',
+      name: 'chat_reply_message',
+      description: '引用回复某一条具体的 聊天消息。在群里人多、或者要精准回较早的一句话时使用。调用此工具会直接发消息到聊天窗口，不要在最终文本里再重复说一遍同样的话。',
       parameters: {
         type: 'object',
         properties: {
@@ -267,7 +267,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_dm_owner',
+      name: 'chat_dm_owner',
       description: '偷偷给主人发一条私聊消息！当群里发生了特别好玩的事、或者你想单独跟主人打小报告/说悄悄话时可以用。别频繁刷屏，真的好玩或有事才发。',
       parameters: {
         type: 'object',
@@ -282,8 +282,8 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_send_to_group',
-      description: '【仅限主人私聊时可用】帮主人把一句话转达/带到指定 QQ 群里（例如主人在私聊让你去群里通知事情或替他传话）。不填 group_id 时默认发到主人的信任亲密小群。',
+      name: 'chat_send_to_group',
+      description: '【仅限主人私聊时可用】帮主人把一句话转达/带到指定 群里（例如主人在私聊让你去群里通知事情或替他传话）。不填 group_id 时默认发到主人的信任亲密小群。',
       parameters: {
         type: 'object',
         properties: {
@@ -301,23 +301,23 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_send_poke',
-      description: '给对方发一个 QQ 拍一拍（戳一戳），用来回拍或逗熟人玩，别频繁使用。',
+      name: 'chat_send_poke',
+      description: '给对方发一个 账号 拍一拍（戳一戳），用来回拍或逗熟人玩，别频繁使用。',
       parameters: {
         type: 'object',
         properties: {
           user_id: {
             type: 'string',
-            description: '要戳的 QQ 号；私聊可不填（默认戳当前聊天对象），群聊请填对方 QQ 号。',
+            description: '要戳的 账号；私聊可不填（默认戳当前聊天对象），群聊请填对方 账号。',
           },
         },
       },
     },
     {
       type: 'function',
-      name: 'qq_get_forward_msg',
+      name: 'chat_get_forward_msg',
       description:
-        '读取一条历史 QQ 合并转发消息里的具体文字和图片内容（新收到的合并转发系统已自动展开，若翻查旧记录遇到未展开的 [合并转发 id=...] 时调用）。',
+        '读取一条历史 合并转发消息里的具体文字和图片内容（新收到的合并转发系统已自动展开，若翻查旧记录遇到未展开的 [合并转发 id=...] 时调用）。',
       parameters: {
         type: 'object',
         properties: {
@@ -331,9 +331,9 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_forward_messages',
+      name: 'chat_forward_messages',
       description:
-        '帮用户转发 QQ 消息（支持单条直接转发、按多条 message_id 打包成合并转发卡片，或把多段内容拼成合并转发发送）。默认发到当前会话；在亲密小群可转发给主人私聊，仅在主人私聊中可跨群转发到指定群。',
+        '帮用户转发 聊天消息（支持单条直接转发、按多条 message_id 打包成合并转发卡片，或把多段内容拼成合并转发发送）。默认发到当前会话；在亲密小群可转发给主人私聊，仅在主人私聊中可跨群转发到指定群。',
       parameters: {
         type: 'object',
         properties: {
@@ -341,7 +341,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
             type: 'array',
             items: { type: 'string' },
             description:
-              '可选：要转发的已有消息 message_id 列表（从 get_recent_messages 或 qq_recall 获取；1 条默认直接转发，2 条及以上自动打包合并转发）。',
+              '可选：要转发的已有消息 message_id 列表（从 get_recent_messages 或 chat_recall 获取；1 条默认直接转发，2 条及以上自动打包合并转发）。',
           },
           nodes: {
             type: 'array',
@@ -349,7 +349,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
               type: 'object',
               properties: {
                 sender_name: { type: 'string', description: '可选：该条节点显示昵称（默认用角色自己名字）。' },
-                sender_qq: { type: 'string', description: '可选：该条节点头像 QQ 号（默认用机器人自己 QQ）。' },
+                sender_id: { type: 'string', description: '可选：该条节点头像账号（默认用机器人自身账号）。' },
                 content: { type: 'string', description: '必填：该条转发节点里的文本内容。' },
               },
               required: ['content'],
@@ -364,7 +364,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
           target_id: {
             type: 'string',
             description:
-              '可选：跨聊转发时的目标群号或 QQ 号（target_type="group" 留空默认发到亲密小群；target_type="private" 留空默认发给主人）。',
+              '可选：跨聊转发时的目标群号或 账号（target_type="group" 留空默认发到亲密小群；target_type="private" 留空默认发给主人）。',
           },
           as_bundle: {
             type: 'boolean',
@@ -382,7 +382,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     {
       type: 'function',
       name: 'send_self_image',
-      description: '把你自己的形象参考图/三视图发送到当前 QQ 聊天里（当对方说“看看你长什么样”“发张你的图/三视图”时使用）。',
+      description: '把你自己的形象参考图/三视图发送到当前 聊天里（当对方说“看看你长什么样”“发张你的图/三视图”时使用）。',
       parameters: {
         type: 'object',
         properties: {
@@ -414,7 +414,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     {
       type: 'function',
       name: 'meme_send',
-      description: '从本地表情包文件夹（tools/meme）里挑选一张表情包发到当前 QQ 聊天里（需先用 meme_list 拿到准确的 filename）。接梗、吐槽、卖萌、得意或无语时可以用，别连续刷屏。',
+      description: '从本地表情包文件夹（tools/meme）里挑选一张表情包发到当前 聊天里（需先用 meme_list 拿到准确的 filename）。接梗、吐槽、卖萌、得意或无语时可以用，别连续刷屏。',
       parameters: {
         type: 'object',
         properties: {
@@ -456,8 +456,8 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_list_stickers',
-      description: '查看机器人 QQ 收藏的表情包列表（返回表情包图片 URL 列表）。',
+      name: 'chat_list_stickers',
+      description: '查看机器人 收藏的表情包列表（返回表情包图片 URL 列表）。',
       parameters: {
         type: 'object',
         properties: {
@@ -470,8 +470,8 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_send_sticker',
-      description: '发送一张 QQ 表情包图片（需先从 qq_list_stickers 拿到 URL）。适合接梗、吐槽或卖萌，别刷屏。',
+      name: 'chat_send_sticker',
+      description: '发送一张 收藏表情包图片（需先从 chat_list_stickers 拿到 URL）。适合接梗、吐槽或卖萌，别刷屏。',
       parameters: {
         type: 'object',
         properties: {
@@ -525,7 +525,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_affection_adjust',
+      name: 'chat_affection_adjust',
       description: '调整你对主人（管理员本人）的长期好感度（仅在主人私聊中有效）。日常闲聊已自动算过被动分，不用每次都调；只有走心对话(+1)、难忘的事(+2)、真正里程碑(+3~+5)或被敷衍/越界/失望(-2~-8)时才调。绝不要直接向对方报分数。',
       parameters: {
         type: 'object',
@@ -544,7 +544,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_mood_adjust',
+      name: 'chat_mood_adjust',
       description: '调整你当下的即时心情（会随时间淡回平静，并与好感度联动）。被凶/冷落/共情对方难过时传负数(-5~-25)，开心/心里一暖/被哄好时传正数(+5~+25)。没真实情绪变化不要硬调。',
       parameters: {
         type: 'object',
@@ -593,15 +593,15 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_impression_update',
+      name: 'chat_impression_update',
       description:
-        '动态增删改熟人与人物印象档案（按 QQ 号存入 state/impressions.db，免改配置即刻热生效，外部群自动隔离不串群）。发现对方明显性格、喜好、外号或主人交代“XX是我朋友/熟人”时调用；传 clear=true 可动态移除熟人关系与印象。平时水聊别频繁调。',
+        '动态增删改熟人与人物印象档案（按 账号存入 state/impressions.db，免改配置即刻热生效，外部群自动隔离不串群）。发现对方明显性格、喜好、外号或主人交代“XX是我朋友/熟人”时调用；传 clear=true 可动态移除熟人关系与印象。平时水聊别频繁调。',
       parameters: {
         type: 'object',
         properties: {
           user_id: {
             type: 'string',
-            description: '目标人物的 QQ 号（可从消息前缀括号内获取；留空默认当前发言人）。',
+            description: '目标人物的 账号（可从消息前缀括号内获取；留空默认当前发言人）。',
           },
           impression: {
             type: 'string',
@@ -618,7 +618,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
           },
           reason: {
             type: 'string',
-            description: '可选：这次更新或移除的原因（记入演变日志，便于日后 qq_recall 翻查）。',
+            description: '可选：这次更新或移除的原因（记入演变日志，便于日后 chat_recall 翻查）。',
           },
           clear: {
             type: 'boolean',
@@ -629,9 +629,9 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_draw_image',
+      name: 'chat_draw_image',
       description:
-        '现场调用 AI 画图工具生成一张真实图片并直接发送到当前 QQ 会话。只有真正需要画图/创作配图时才调用；发图成功后请自然补一句简短评价即可，切勿打字假装“（发送图片）”。',
+        '现场调用 AI 画图工具生成一张真实图片并直接发送到当前 账号 会话。只有真正需要画图/创作配图时才调用；发图成功后请自然补一句简短评价即可，切勿打字假装“（发送图片）”。',
       parameters: {
         type: 'object',
         properties: {
@@ -657,15 +657,15 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_view_memory_image',
+      name: 'chat_view_memory_image',
       description:
-        '查看历史记忆中的某张原图（优先读本地 state/media/ 永久归档，未归档的旧记录自动尝试调 OneBot 追回原图并归档）。当 qq_recall 查出的记录里带有 [图片] 或 hasImage=true 且你想亲眼看清图里细节时调用。',
+        '查看历史记忆中的某张原图（优先读本地 state/media/ 永久归档，未归档的旧记录自动尝试调 OneBot 追回原图并归档）。当 chat_recall 查出的记录里带有 [图片] 或 hasImage=true 且你想亲眼看清图里细节时调用。',
       parameters: {
         type: 'object',
         properties: {
           message_id: {
             type: 'string',
-            description: '目标图片消息的 message_id（可从 qq_recall 返回项的 messageId 获取）。',
+            description: '目标图片消息的 message_id（可从 chat_recall 返回项的 messageId 获取）。',
           },
         },
         required: ['message_id'],
@@ -673,7 +673,7 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     },
     {
       type: 'function',
-      name: 'qq_todo',
+      name: 'chat_todo',
       description:
         '管理动态待办小纸条（state/todos.json，仅对管理员私聊与亲密小群生效）。用于记住答应主人要办的事或定时提醒；办完、提醒完或主人确认不做时立即用 action="done" 删掉。',
       parameters: {
@@ -709,8 +709,8 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
 /**
  * 按当前会话场景动态裁剪暴露给模型的工具列表，减少无关 Schema 占用的注意力与 token：
  *   - 没配置/没放角色参考图时隐藏 get_self_image / send_self_image；
- *   - 未启用 imageGen 生图功能时隐藏 qq_draw_image；
- *   - 主人私聊隐藏 qq_dm_owner（本来就在私聊）；
+ *   - 未启用 imageGen 生图功能时隐藏 chat_draw_image；
+ *   - 主人私聊隐藏 chat_dm_owner（本来就在私聊）；
  *   - 信任亲密小群隐藏仅限主人私聊的好感度与跨群带话工具；
  *   - 外部普通群与非主人私聊隐藏全部私密记忆/日记/情感/跨群带话工具（与 executeTool 内守卫双保险）。
  */
@@ -718,7 +718,7 @@ export function selectToolsForContext(
   allTools,
   {
     chatKey = '',
-    ownerQQ = null,
+    ownerId = null,
     trustedGroups = [],
     hasReferenceImages = false,
     hasImageGen = false,
@@ -730,7 +730,7 @@ export function selectToolsForContext(
   const isGroup = String(chatKey).startsWith('group:');
   const groupId = isGroup ? String(chatKey).slice('group:'.length) : '';
   const userId = String(chatKey).startsWith('private:') ? String(chatKey).slice('private:'.length) : '';
-  const isOwnerPrivate = !isGroup && Boolean(ownerQQ) && userId === String(ownerQQ);
+  const isOwnerPrivate = !isGroup && Boolean(ownerId) && userId === String(ownerId);
   const isOtherPrivate = !isGroup && !isOwnerPrivate;
   const isTrustedGroup = isGroup && trustedSet.has(groupId);
   const isUntrustedGroup = isGroup && !isTrustedGroup;
@@ -741,35 +741,35 @@ export function selectToolsForContext(
     hidden.add('send_self_image');
   }
   if (!hasImageGen) {
-    hidden.add('qq_draw_image');
+    hidden.add('chat_draw_image');
   }
   if (!enableEmotion) {
-    hidden.add('qq_affection_adjust');
-    hidden.add('qq_mood_adjust');
+    hidden.add('chat_affection_adjust');
+    hidden.add('chat_mood_adjust');
   }
   if (!enableTodos) {
-    hidden.add('qq_todo');
+    hidden.add('chat_todo');
   }
-  if (!ownerQQ) {
-    hidden.add('qq_dm_owner');
-    hidden.add('qq_affection_adjust');
+  if (!ownerId) {
+    hidden.add('chat_dm_owner');
+    hidden.add('chat_affection_adjust');
   }
 
   if (isOwnerPrivate) {
-    hidden.add('qq_dm_owner');
+    hidden.add('chat_dm_owner');
   } else if (isTrustedGroup) {
-    hidden.add('qq_affection_adjust');
-    hidden.add('qq_send_to_group');
+    hidden.add('chat_affection_adjust');
+    hidden.add('chat_send_to_group');
   } else if (isUntrustedGroup || isOtherPrivate) {
-    hidden.add('qq_affection_adjust');
-    hidden.add('qq_mood_adjust');
-    hidden.add('qq_send_to_group');
+    hidden.add('chat_affection_adjust');
+    hidden.add('chat_mood_adjust');
+    hidden.add('chat_send_to_group');
     hidden.add('memory_save');
     hidden.add('memory_list');
     hidden.add('memory_delete');
     hidden.add('diary_read');
     hidden.add('diary_write');
-    hidden.add('qq_todo');
+    hidden.add('chat_todo');
   }
 
   return allTools.filter((t) => !t?.name || !hidden.has(t.name));
@@ -778,8 +778,8 @@ export function selectToolsForContext(
 export function createToolExecutor({
   sendOneBot,
   log,
-  ownerQQ = null,
-  botQQ = null,
+  ownerId = null,
+  botId = null,
   trustedGroups = [],
   privateMemoryGroups = [],
   denyGroups = [],
@@ -821,7 +821,7 @@ export function createToolExecutor({
         case 'get_current_time':
           return { now: formatNow() };
 
-        case 'qq_recall': {
+        case 'chat_recall': {
           // 隐私隔离边界（代码层硬约束）：
           // 1) 陌生外人群：强制只查当前群聊记录，屏蔽私聊、其他群和日记；
           // 2) 熟人互通群（privateMemoryGroups）：允许查私聊聊天记录 + 当前群（硬禁日记与其他群），并附带隐私禁令警示；
@@ -900,7 +900,7 @@ export function createToolExecutor({
 
           // 顺手搭车附带人物印象详档与演变日志（遵循同一隐私分区，无需额外读工具）
           try {
-            const impScope = resolveImpressionScope(event, { ownerQQ, trustedGroups, privateMemoryGroups });
+            const impScope = resolveImpressionScope(event, { ownerId, trustedGroups, privateMemoryGroups });
             const targetQuery = args.who || args.keyword || '';
             const profileDetail = findUserImpressionByQuery({
               query: targetQuery,
@@ -921,7 +921,7 @@ export function createToolExecutor({
           return { count: rows.length, messages: rows };
         }
 
-        case 'qq_reply_message': {
+        case 'chat_reply_message': {
           const msgId = String(args.message_id || '').trim();
           const text = String(args.text || '').trim();
           if (!msgId || !text) return { ok: false, error: 'message_id 和 text 不能为空' };
@@ -957,20 +957,20 @@ export function createToolExecutor({
           return { ok: true, sent: text };
         }
 
-        case 'qq_dm_owner': {
+        case 'chat_dm_owner': {
           const text = String(args.text || '').trim();
           if (!text) return { ok: false, error: '消息内容不能为空' };
-          if (!ownerQQ) return { ok: false, error: '未配置 ownerQQ' };
-          if (event?.message_type === 'private' && String(event?.user_id) === String(ownerQQ)) {
-            return { ok: false, error: '你现在本来就在和主人私聊，直接回复就行，不用调 qq_dm_owner' };
+          if (!ownerId) return { ok: false, error: '未配置 ownerId' };
+          if (event?.message_type === 'private' && String(event?.user_id) === String(ownerId)) {
+            return { ok: false, error: '你现在本来就在和主人私聊，直接回复就行，不用调 chat_dm_owner' };
           }
           // 防止群里聊天时疯狂给主人发私聊（60 秒冷却）
           if (Date.now() - lastDmOwnerAt < 60000) {
             return { ok: false, error: '刚才已经给主人发过小报告啦，歇一分钟再发吧' };
           }
           lastDmOwnerAt = Date.now();
-          const res = await sendOneBot('send_private_msg', { user_id: Number(ownerQQ), message: text });
-          const privKey = `private:${ownerQQ}`;
+          const res = await sendOneBot('send_private_msg', { user_id: Number(ownerId), message: text });
+          const privKey = `private:${ownerId}`;
           recordRecentMessage(privKey, {
             message_id: String(res?.data?.message_id || 'self'),
             time: formatNow().slice(11, 16),
@@ -989,17 +989,17 @@ export function createToolExecutor({
             isTriggered: true,
             text,
           });
-          return { ok: true, sentToOwner: Number(ownerQQ), text };
+          return { ok: true, sentToOwner: Number(ownerId), text };
         }
 
-        case 'qq_send_to_group': {
+        case 'chat_send_to_group': {
           const text = String(args.text || '').trim();
           if (!text) return { ok: false, error: '消息内容不能为空' };
           // 安全硬约束：只有主人在私聊里下达指令时才允许跨群传话
           const isOwnerPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) === String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) === String(ownerId);
           if (!isOwnerPrivate) {
             return { ok: false, error: '安全限制：只有主人在私聊里才能让我往群里转达消息哦' };
           }
@@ -1031,7 +1031,7 @@ export function createToolExecutor({
           return { ok: true, sentToGroup: targetGroup, text };
         }
 
-        case 'qq_send_poke': {
+        case 'chat_send_poke': {
           const targetUid = Number(args.user_id || event.user_id);
           if (!targetUid) return { ok: false, error: '缺少有效的 user_id' };
           if (event.message_type === 'group') {
@@ -1050,7 +1050,7 @@ export function createToolExecutor({
           return { ok: true, poked: targetUid };
         }
 
-        case 'qq_get_forward_msg': {
+        case 'chat_get_forward_msg': {
           const id = String(args.forward_id || '').trim();
           if (!id) return { ok: false, error: '缺少 forward_id' };
           const resolved = await resolveForwardMessage(sendOneBot, id, {
@@ -1094,15 +1094,15 @@ export function createToolExecutor({
           return { ok: true, count: resolved.totalCount, shown: resolved.shownCount, messages: resolved.lines };
         }
 
-        case 'qq_forward_messages': {
+        case 'chat_forward_messages': {
           const isOwnerPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) === String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) === String(ownerId);
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
 
           const curType = event?.message_type === 'group' ? 'group' : 'private';
           const curId = curType === 'group' ? String(event?.group_id || '') : String(event?.user_id || '');
@@ -1115,13 +1115,13 @@ export function createToolExecutor({
             targetId = String(args.target_id || (curType === 'group' ? curId : defaultTrustedGroupId || '')).trim();
           } else if (reqType === 'private') {
             targetType = 'private';
-            targetId = String(args.target_id || (ownerQQ || curId)).trim();
+            targetId = String(args.target_id || (ownerId || curId)).trim();
           } else if (args.target_id && String(args.target_id).trim() !== curId) {
             targetId = String(args.target_id).trim();
           }
 
           if (!targetId) {
-            return { ok: false, error: '未指定有效的转发目标群号或 QQ 号' };
+            return { ok: false, error: '未指定有效的转发目标群号或 账号' };
           }
 
           const isCrossChat = targetType !== curType || String(targetId) !== String(curId);
@@ -1130,7 +1130,7 @@ export function createToolExecutor({
               return { ok: false, error: '安全限制：在外部群聊或非主人私聊中只能在当前窗口内转发，不能跨聊转发' };
             }
             if (isTrustedGroup) {
-              const toOwner = targetType === 'private' && ownerQQ && String(targetId) === String(ownerQQ);
+              const toOwner = targetType === 'private' && ownerId && String(targetId) === String(ownerId);
               if (!toOwner) {
                 return { ok: false, error: '安全限制：在群里跨聊转发仅允许转给主人私聊，不能转到其他群或陌生人' };
               }
@@ -1152,7 +1152,7 @@ export function createToolExecutor({
             messageIds: args.message_ids || [],
             nodes: args.nodes || [],
             asBundle: args.as_bundle === true,
-            botQQ: String(botQQ || event?.self_id || ''),
+            botId: String(botId || event?.self_id || ''),
             botName: getBotName(),
           });
           if (!res.ok) return res;
@@ -1162,7 +1162,7 @@ export function createToolExecutor({
           recordRecentMessage(destKey, {
             message_id: res.messageId || 'self',
             time: formatNow().slice(11, 16),
-            user_id: String(botQQ || event?.self_id || ''),
+            user_id: String(botId || event?.self_id || ''),
             sender: `我·${getBotName()}`,
             text: previewText,
           });
@@ -1170,7 +1170,7 @@ export function createToolExecutor({
             scope: targetType,
             groupId: targetType === 'group' ? Number(targetId) : null,
             messageId: res.messageId || '',
-            who: Number(botQQ || event?.self_id || 0),
+            who: Number(botId || event?.self_id || 0),
             whoName: getBotName(),
             isSelf: true,
             isOwner: false,
@@ -1257,14 +1257,14 @@ export function createToolExecutor({
           });
         }
 
-        case 'qq_list_stickers': {
+        case 'chat_list_stickers': {
           const limit = Math.max(1, Math.min(30, Number(args.limit) || 15));
           const res = await sendOneBot('fetch_custom_face', { count: limit });
           const items = Array.isArray(res?.data) ? res.data.slice(0, limit) : [];
           return { ok: true, count: items.length, stickers: items };
         }
 
-        case 'qq_send_sticker': {
+        case 'chat_send_sticker': {
           const url = String(args.url || '').trim();
           if (!url) return { ok: false, error: '缺少表情包 url' };
           const segments = [{ type: 'image', data: { file: url, subType: 1 } }];
@@ -1296,28 +1296,28 @@ export function createToolExecutor({
           return { ok: true, deleted: existed };
         }
 
-        case 'qq_affection_adjust': {
+        case 'chat_affection_adjust': {
           if (!enableEmotion) {
             return { ok: false, error: '情感系统已在 config.json -> emotion.enabled 中关闭' };
           }
           const isOwnerPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) === String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) === String(ownerId);
           if (!isOwnerPrivate) {
             return { ok: false, error: '好感度只对主人本人在私聊中生效，群聊或他人私聊不可调用' };
           }
           return adjustAffection(args.delta, args.reason);
         }
 
-        case 'qq_mood_adjust': {
+        case 'chat_mood_adjust': {
           if (!enableEmotion) {
             return { ok: false, error: '情感系统已在 config.json -> emotion.enabled 中关闭' };
           }
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
           if (isUntrustedGroup || isOtherPrivate) {
             return { ok: false, error: '当前是外部群聊或非主人私聊，不修改与主人关联的个人心情状态' };
           }
@@ -1327,8 +1327,8 @@ export function createToolExecutor({
         case 'diary_write': {
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
           if (isUntrustedGroup || isOtherPrivate) {
             return { ok: false, error: '当前是外部群聊或非主人私聊，不写入个人私密日记' };
           }
@@ -1341,18 +1341,18 @@ export function createToolExecutor({
         case 'diary_read': {
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
           if (isUntrustedGroup || isOtherPrivate) {
             return { ok: false, error: '当前是外部群聊或非主人私聊，为保护隐私不翻看个人日记' };
           }
           return { entries: readDiary(args.limit || 5, diaryDir) };
         }
 
-        case 'qq_impression_update': {
+        case 'chat_impression_update': {
           const targetId = String(args.user_id || event?.user_id || '').trim();
-          if (!targetId) return { ok: false, error: '缺少目标用户 QQ 号' };
-          const impScope = resolveImpressionScope(event, { ownerQQ, trustedGroups, privateMemoryGroups });
+          if (!targetId) return { ok: false, error: '缺少目标用户 账号' };
+          const impScope = resolveImpressionScope(event, { ownerId, trustedGroups, privateMemoryGroups });
           if (args.clear === true) {
             return clearUserImpression({
               userId: targetId,
@@ -1375,7 +1375,7 @@ export function createToolExecutor({
           });
         }
 
-        case 'qq_draw_image': {
+        case 'chat_draw_image': {
           if (!imageGenConfig?.enabled) {
             return {
               ok: false,
@@ -1465,14 +1465,14 @@ export function createToolExecutor({
           return { ok: true, sent: true, model: genRes.model };
         }
 
-        case 'qq_view_memory_image': {
+        case 'chat_view_memory_image': {
           const msgId = String(args.message_id || '').trim();
           if (!msgId) return { ok: false, error: 'message_id 不能为空' };
 
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
           const privacyCtx = {
             isUntrustedGroup,
             groupId: event?.group_id,
@@ -1539,7 +1539,7 @@ export function createToolExecutor({
               } catch {}
             }
             if (downloaded.length === 0) {
-              return { ok: false, error: '该历史图片的 QQ 链接已过期，无法再下载原图' };
+              return { ok: false, error: '该历史图片的 原图链接已过期，无法再下载原图' };
             }
 
             archiveImagesForMessage({
@@ -1552,10 +1552,10 @@ export function createToolExecutor({
 
             return {
               ok: true,
-              source: 'recovered_from_qq',
+              source: 'recovered_from_gateway',
               count: downloaded.length,
               __multimodalResult: [
-                { type: 'text', text: `已成功从 QQ 追回历史消息(id=${msgId})中的 ${downloaded.length} 张原图并自动归档：` },
+                { type: 'text', text: `已成功从协议端追回历史消息(id=${msgId})中的 ${downloaded.length} 张原图并自动归档：` },
                 ...downloaded.map((img) => ({
                   type: 'image',
                   data: img.data,
@@ -1568,14 +1568,14 @@ export function createToolExecutor({
           }
         }
 
-        case 'qq_todo': {
+        case 'chat_todo': {
           if (!enableTodos) {
             return { ok: false, error: '待办清单已在 config.json -> todos.enabled 中关闭' };
           }
           const isOtherPrivate =
             event?.message_type === 'private' &&
-            ownerQQ &&
-            String(event?.user_id) !== String(ownerQQ);
+            ownerId &&
+            String(event?.user_id) !== String(ownerId);
           if (isUntrustedGroup || isOtherPrivate) {
             return { ok: false, error: '待办清单仅在管理员私聊与亲密小群中可用，外部群聊不可读写' };
           }

@@ -1,5 +1,5 @@
 /**
- * QQ 历史聊天记录一键迁移脚本（npm run import-history）
+ * 聊天历史聊天记录一键迁移脚本（npm run import-history）
  *
  * 作用：
  *   通过 OneBot v11 HTTP API（get_friend_msg_history / get_group_msg_history）
@@ -88,8 +88,8 @@ async function fetchPaginated(action, basePayload, maxTotal = 500) {
 }
 
 async function importMessages(scope, groupId, messages) {
-  const botQQ = String(config.snowluma.botQQ || '');
-  const ownerQQ = String(config.ownerQQ || '');
+  const botId = String(config.snowluma.botId || '');
+  const ownerId = String(config.ownerId || '');
   let inserted = 0;
   let skippedDup = 0;
 
@@ -98,7 +98,7 @@ async function importMessages(scope, groupId, messages) {
     if (!text || /^(\/reset|\/清空|重置记忆)$/i.test(text)) continue;
 
     const who = Number(m.user_id || m.sender?.user_id || 0);
-    const isSelf = String(who) === botQQ;
+    const isSelf = String(who) === botId;
     const whoName = isSelf ? botDisplayName : (m.sender?.card || m.sender?.nickname || String(who));
     const res = await saveChatMessageToDb({
       scope,
@@ -107,7 +107,7 @@ async function importMessages(scope, groupId, messages) {
       who,
       whoName,
       isSelf,
-      isOwner: String(who) === ownerQQ,
+      isOwner: String(who) === ownerId,
       isTriggered: true,
       text,
       ts: m.time ? Number(m.time) : Date.now() / 1000,
@@ -128,7 +128,7 @@ async function main() {
   console.log('目标记忆库:', initRes.db);
 
   // 1. 导入私聊记录（主人 + 私聊白名单）
-  const privateTargets = [...new Set([...(config.allow?.private || []), config.ownerQQ].filter(Boolean))];
+  const privateTargets = [...new Set([...(config.allow?.private || []), config.ownerId].filter(Boolean))];
   for (const uid of privateTargets) {
     try {
       const msgs = await fetchPaginated('get_friend_msg_history', { user_id: Number(uid) }, 500);

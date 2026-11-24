@@ -51,8 +51,8 @@ export function parseBotCliArgs(argv = process.argv.slice(2)) {
   if (!dataDir && botName) {
     dataDir = path.join(CODE_ROOT, 'bots', botName);
   }
-  if (!dataDir && process.env.QQ_BOT_DIR) {
-    dataDir = path.resolve(process.env.QQ_BOT_DIR);
+  if (!dataDir && process.env.CHAT_BOT_DIR) {
+    dataDir = path.resolve(process.env.CHAT_BOT_DIR);
   }
   if (!botName && dataDir) {
     botName = path.basename(path.resolve(dataDir));

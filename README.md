@@ -22,15 +22,15 @@
   1. **短期滑窗上下文（`state/context.db`）**：采用无状态 `store: false` 模式，全本地 SQLite 维护最近 N 轮对话，**不受服务端 1 天过期限制**，跨重启与切模型不丢上下文；内置 **12h / 48h 时间阶梯自然淡出**（12h 内全量、12~48h 自动收窄留最近 4 轮隔夜尾巴、超 48h 翻篇清空）。
   2. **群聊实时背景缓存**：静默缓存每个群最近 30 条发言，唤醒时自动附带上下文，无缝接梗。
   3. **长期小本本（`state/memory.json`）**：记住管理员与群友的喜好/约定/梗，每轮热注入人设，`/reset` 也不忘。
-  4. **全量历史归档与日记（`state/memory.db`）**：每一条收发消息与日记实时入库并建立中文单字/二元组 + 英文数字 **FTS5 全文索引**，支持通过 `qq_recall` 毫秒级翻查往事，并兼容可选本地向量服务做 RRF 融合排序。
+  4. **全量历史归档与日记（`state/memory.db`）**：每一条收发消息与日记实时入库并建立中文单字/二元组 + 英文数字 **FTS5 全文索引**，支持通过 `chat_recall` 毫秒级翻查往事，并兼容可选本地向量服务做 RRF 融合排序。
 - **好感度与心情双向联动（`state/emotion.json`）**：
-  - **好感度（`0~100`）**：仅对管理员（`ownerQQ`）私聊生效，每日正常私聊自动记被动分，主动调整内置冷却、日上限、里程碑冷却与 80+/90+ 高分衰减。
+  - **好感度（`0~100`）**：仅对管理员（`ownerId`）私聊生效，每日正常私聊自动记被动分，主动调整内置冷却、日上限、里程碑冷却与 80+/90+ 高分衰减。
   - **心情（`-50~+50`）**：按 4 小时半衰期自然回归平静，与好感度双向影响情绪敏感度及主动冒泡频率；从低落被哄好转晴时会提示角色自然说开翻篇。
 - **代码级四层隐私隔离**：
-  - **管理员私聊（`ownerQQ`）**：全库互通（私聊 + 群聊 + 小本本 + 日记 + 待办 + 情感状态）。
+  - **管理员私聊（`ownerId`）**：全库互通（私聊 + 群聊 + 小本本 + 日记 + 待办 + 情感状态）。
   - **信任亲密小群（`memoryPrivacy.trustedGroups`）**：允许与管理员私聊互通记忆、小本本、日记与待办，不跨查其他无关群。
   - **熟人互通群（`memoryPrivacy.privateMemoryGroups`）**：打通管理员私聊日常聊天记忆、小本本与人物印象供心里有数，但**代码层硬禁日记、待办、情感、私聊原图与小本本读写工具**，并在场景与检索结果中强制附加群聊防泄密护栏，绝不把私密内容抖给外人。
-  - **普通外部群**：代码层强制全量隔离——`qq_recall` 仅限当前群聊记录，禁止读取私密小本本、日记、待办和情感状态，杜绝群聊泄密。
+  - **普通外部群**：代码层强制全量隔离——`chat_recall` 仅限当前群聊记录，禁止读取私密小本本、日记、待办和情感状态，杜绝群聊泄密。
 - **多模态看图 & 本地表情包库（`tools/meme/`）**：
   - 自动下载 Chat 图片发送给当前多模态大模型理解（Gemini / GPT / Claude 等均支持）。
   - 支持机器人自主**偷图收藏（SHA-1 自动去重 + 魔数识别格式）**、按关键词检索并发送本地 `tools/meme/` 里的表情包；也支持人工直接拖图进文件夹即刻识别。
@@ -42,7 +42,7 @@
   - 支持 `@` 提及、引用机器人消息、关键词、拍一拍（戳一戳）、按概率随机冒泡。
   - 内置 `maxConsecutiveWithoutOwner` 护栏：群里存在多个 AI 机器人时，无人类发言最多连续接话指定轮数，杜绝双 AI 无限互怼烧额度。
 - **主动找你聊（Proactive Chat）**：支持私聊与指定群冷场后按概率主动冒泡，内置夜间免打扰时段与防连发机制。
-- **跨聊传话 & 悄悄打小报告**：支持群内悄悄私聊管理员（`qq_dm_owner`）以及仅限管理员私聊遥控向群内带话（`qq_send_to_group`）。
+- **跨聊传话 & 悄悄打小报告**：支持群内悄悄私聊管理员（`chat_dm_owner`）以及仅限管理员私聊遥控向群内带话（`chat_send_to_group`）。
 - **一键历史迁移**：内置 `npm run import-history`，可从 OneBot 网关自动拉取已有私聊/群聊历史写入 `state/memory.db`（自动按 `message_id` 去重）。
 
 ---
@@ -109,7 +109,7 @@ chat-soul-bridge/
 ├── bots/                        # 自动生成的多 Bot 独立运行目录（已加入 .gitignore，按账号隔离）
 │   └── bot_<ID>/
 │       ├── start.bat            # 双击单开该 Bot（共享根目录 src/ 代码）
-│       ├── config.json          # 该 Bot 独立配置（自动预填 SnowLuma 端口/Token/botQQ）
+│       ├── config.json          # 该 Bot 独立配置（自动预填 SnowLuma 端口/Token/botId）
 │       ├── .env                 # 该 Bot 独立模型 API Key（优先覆盖根目录 .env）
 │       ├── roles/persona.txt    # 该 Bot 独立人设卡（自带完整 Chat 活人感模板，保存即热更新）
 │       ├── tools/Diary/         # 该 Bot 独立每日 Markdown 日记目录
@@ -151,7 +151,7 @@ npm run init
 
 按提示输入你本机的 SnowLuma / NapCat 安装目录（或 `config` 目录，绝不写死路径），脚本会自动识别其中全部 `onebot_<ID>.json` / `onebot11_<ID>.json` 配置，勾选 1 个或多个账号后自动按账号生成完全隔离的 `bots/bot_<ID>/` 文件夹：
 - **`bots/bot_<ID>/start.bat`**：双击直接单开这只 Bot（macOS / Linux 运行 `npm start -- --bot=bot_<ID>`）；
-- **`bots/bot_<ID>/config.json`**：已自动填好该 Bot 的 SnowLuma 端口、Token、`botQQ` 和 `ownerQQ`（多只 Bot 一起生成时还会自动互加为 `同群AI伙伴` 防互怼）；
+- **`bots/bot_<ID>/config.json`**：已自动填好该 Bot 的 SnowLuma 端口、Token、`botId` 和 `ownerId`（多只 Bot 一起生成时还会自动互加为 `同群AI伙伴` 防互怼）；
 - **`bots/bot_<ID>/.env`**：独立模型 API Key（运行时先读根目录 `.env` 兜底，再用本文件覆盖同名变量，不同 Bot 可各自挂不同模型和 Key）；
 - **`bots/bot_<ID>/roles/persona.txt`**：自带完整 Chat 活人感模板，填好人设即可（通用工具规范 `roles/persona-tools-detail.txt` 默认自动共用根目录）；
 - **`bots/bot_<ID>/tools/Diary/`、`tools/meme/`、`assets/` 与 `state/`**：日记、表情包、参考图与四层记忆库 100% 物理隔离，同时共用同一套 `src/` 代码。
@@ -192,26 +192,26 @@ npm run init
 
 #### ② 配置 OneBot 网关与机器人账号（`config.json -> snowluma`）
 
-填入你的 OneBot v11 正向 WebSocket 地址、HTTP API 地址、`accessToken` 以及机器人自己的账号 `botQQ`（用于过滤自发消息与识别 `@`）：
+填入你的 OneBot v11 正向 WebSocket 地址、HTTP API 地址、`accessToken` 以及机器人自己的账号 `botId`（用于过滤自发消息与识别 `@`）：
 
 ```json
 "snowluma": {
   "wsUrl": "ws://127.0.0.1:3001/?access_token=你的WS令牌",
   "httpUrl": "http://127.0.0.1:3000",
   "accessToken": "你的HTTP令牌",
-  "botQQ": 1000000000
+  "botId": 1000000000
 }
 ```
 
-#### ③ 配置管理员账号（`config.json -> ownerQQ`）
+#### ③ 配置管理员账号（`config.json -> ownerId`）
 
-把 `ownerQQ` 改成**你自己的管理员 Chat 账号**：
+把 `ownerId` 改成**你自己的管理员 Chat 账号**：
 
 ```json
-"ownerQQ": 1234567890
+"ownerId": 1234567890
 ```
 
-> 管理员账号拥有以下专属权限：私聊全量记忆检索、专属好感度与心情联动、`qq_send_to_group`（私聊遥控让机器人往群里带话）、接收群里触发的 `qq_dm_owner` 悄悄话，以及在多 Bot 群聊中重置防互刷计数。
+> 管理员账号拥有以下专属权限：私聊全量记忆检索、专属好感度与心情联动、`chat_send_to_group`（私聊遥控让机器人往群里带话）、接收群里触发的 `chat_dm_owner` 悄悄话，以及在多 Bot 群聊中重置防互刷计数。
 
 #### ④ 配置白名单与黑名单（`allow` / `deny` / `trustedGroups`）
 
@@ -286,7 +286,7 @@ npm run sync-memory -- --bot=bot_1000000000
 | `snowluma.wsUrl` | OneBot v11 正向 WebSocket 地址（含 `access_token`） |
 | `snowluma.httpUrl` | OneBot v11 HTTP API 地址 |
 | `snowluma.accessToken` | OneBot HTTP API 鉴权令牌 |
-| `snowluma.botQQ` | 机器人自身 Chat 账号（用于过滤自发消息与识别 `@`） |
+| `snowluma.botId` | 机器人自身 Chat 账号（用于过滤自发消息与识别 `@`） |
 | `llm.active` | 当前启用的提供商名称（对应 `llm.providers` 里的键名，改这一行即可秒切模型） |
 | `llm.providers.<name>.protocol` | 底层协议类型：`gemini`、`openai`（含 DeepSeek / GPT / Qwen / Kimi / Ollama 等兼容接口）、`anthropic`（Claude）、`agy-cli`（本机 Antigravity CLI 无头长连接 + Chat 工具桥接） |
 | `llm.providers.<name>.baseUrl` | 接口地址（`openai` / `anthropic` 必填；`gemini` 留空走官方地址，填值可接反代） |
@@ -297,14 +297,14 @@ npm run sync-memory -- --bot=bot_1000000000
 | `llm.thinkingLevel` | 模型思考强度（可选，留空走模型默认；支持 `none` / `minimal` / `low` / `medium` / `high` / `xhigh`，也可在单个 `providers.<name>` 内覆盖；自动映射为 Gemini `thinking_level`、OpenAI `reasoning_effort`、Claude `thinking.budget_tokens`） |
 | `llm.maxContextTurns` | 本地 `state/context.db` 保留的最近对话轮数（默认 `20` 轮 = 40 条） |
 | `proxyUrl` | 可选 HTTP/HTTPS 代理地址（如 `http://127.0.0.1:7890`；`127.0.0.1/localhost` 自动直连） |
-| `ownerQQ` | **必配**：管理员/主人 Chat 账号（私聊全记忆、好感度/心情绑定、跨群传话与打小报告权限） |
+| `ownerId` | **必配**：管理员/主人 Chat 账号（私聊全记忆、好感度/心情绑定、跨群传话与打小报告权限） |
 | `identity` | **可选**：静态身份认知配置（`ownerTitle`、`ownerNickname`、`aiBots` 仅标记同群其他 AI 伙伴用于防双 AI 互怼，多开 `init` 自动互填；人类动态熟人关系统一归 `state/impressions.db` 热增删，同时向下兼容旧版 `knownUsers`） |
 | `allowAllGroups` / `allowAllPrivate` | 是否自动放行所有非黑名单群聊 / 私聊（默认 `false`，仅放行白名单） |
 | `allow` / `deny` | 私聊与群聊**白名单** / **黑名单**（黑名单优先；默认模式下需将允许对话的账号与群号填入 `allow`） |
 | `groupTrigger` | 群聊触发策略：`atMention`、`replyToMe`、`keywords`、`topicKeywords`/`topicBoostStep`/`topicMaxBoost`（角色兴趣话题热度概率加成，自动读取 `roles/persona.txt` 的 `topics`）、`ownerRandomReplyProbability`/`ownerReplyCooldownMs`/`ownerFollowupWindowMs`（管理员优先唤醒与连聊加成）、`randomReplyProbability`（普通群友默认 `0.3`）、`botRandomReplyProbability`（同群 AI 伙伴低概率防互刷）、`randomReplyCooldownMs`、`maxConsecutiveWithoutOwner` |
 | `proactive` | 主动冒泡配置：`enabled`、`privateEnabled`、`groupIds`、`idleThresholdMs`、`checkIntervalMinMs/MaxMs`、`probability`、`quietStartHour/EndHour` |
 | `tools` | 联网工具开关：`webSearch`（免费网页搜索/抓取，默认开启）、`googleSearch`（Gemini 原生搜索，需付费层级） |
-| `imageGen` | 可选 AI 画图配置（`qq_draw_image`）：支持 `gemini` 原生生图（可带 `assets/` 参考图）与 `openai` 兼容 `/images/generations`（如硅基流动 FLUX/Kolors、GPT Image 等）；未启用时自动隐藏 |
+| `imageGen` | 可选 AI 画图配置（`chat_draw_image`）：支持 `gemini` 原生生图（可带 `assets/` 参考图）与 `openai` 兼容 `/images/generations`（如硅基流动 FLUX/Kolors、GPT Image 等）；未启用时自动隐藏 |
 | `memoryPrivacy` | **记忆隐私分级白名单**：`trustedGroups`（亲密小群，完全互通私聊/小本本/日记/待办）；`privateMemoryGroups`（熟人互通群，打通私聊聊天记忆/小本本/人物印象供心里有数，代码层硬禁日记/待办/情感/私聊原图且严守群聊隐私护栏）；其余外群全量隔离 |
 | `impressions` | 人物印象库配置（`state/impressions.db`）：`enabled`、`injectMaxUsers`（每轮最多注入人数，默认 `2`，大群防漂移）、`maxCharsPerUser`（每人字数上限，默认 `60`） |
 | `mediaArchive` | 图片记忆归档配置（`state/media/`）：`enabled`、`autoCaption`（新收图异步补写图注进 FTS5）、`maxFiles`（默认 `300`）、`maxTotalMB`（默认 `200`） |
@@ -325,17 +325,17 @@ npm run sync-memory -- --bot=bot_1000000000
 | 类别 | 工具名 | 说明 |
 | --- | --- | --- |
 | **联网检索** | `web_search` / `web_fetch` | 免费实时搜索新闻、天气、攻略与读取公开网页正文（拦截内网 SSRF） |
-| **历史记忆** | `qq_recall` / `qq_view_memory_image` | 检索本地 `state/memory.db`（FTS5 + 图注检索 + 隐私硬过滤）；按 `message_id` 从本地归档或协议端现场追回并查看历史原图 |
+| **历史记忆** | `chat_recall` / `chat_view_memory_image` | 检索本地 `state/memory.db`（FTS5 + 图注检索 + 隐私硬过滤）；按 `message_id` 从本地归档或协议端现场追回并查看历史原图 |
 | **实时上下文** | `get_recent_messages` / `get_current_time` | 翻看当前会话最近 30 条记录 / 获取当前准确时间与时段 |
 | **小本本与日记** | `memory_save` / `memory_list` / `memory_delete` / `diary_write` / `diary_read` | 跨 `/reset` 的长期小本本与每日 Markdown 日记（`tools/Diary/YYYY-MM-DD.md`，同步写入 SQLite 索引） |
-| **动态待办清单** | `qq_todo` (`add` / `done` / `list`) | 轻量动态待办数组（`state/todos.json`），零轮询单 `setTimeout` 准点提醒，超 7 天未做自动随口问一句、确认后再删（外部群隐藏） |
-| **好感与心情** | `qq_affection_adjust` / `qq_mood_adjust` | 长期好感度（含冷却/日上限/高分衰减）与即时心情（4h 半衰期、双向挂钩） |
-| **人物印象库** | `qq_impression_update`（读详档自动搭车 `qq_recall`） | 按账号动态增删改群友/熟人印象、关系标签与演变日志（按群分区物理隔离、大群 O(1) 精准注入） |
+| **动态待办清单** | `chat_todo` (`add` / `done` / `list`) | 轻量动态待办数组（`state/todos.json`），零轮询单 `setTimeout` 准点提醒，超 7 天未做自动随口问一句、确认后再删（外部群隐藏） |
+| **好感与心情** | `chat_affection_adjust` / `chat_mood_adjust` | 长期好感度（含冷却/日上限/高分衰减）与即时心情（4h 半衰期、双向挂钩） |
+| **人物印象库** | `chat_impression_update`（读详档自动搭车 `chat_recall`） | 按账号动态增删改群友/熟人印象、关系标签与演变日志（按群分区物理隔离、大群 O(1) 精准注入） |
 | **形象参考图** | `get_self_image` / `send_self_image` | 按需查看或发送 `assets/` 中的角色三视图/参考图 |
-| **AI 画图** | `qq_draw_image` | 按提示词现场画图并转 `base64://` 发送到聊天窗口（需开启 `imageGen`，支持带角色参考图） |
+| **AI 画图** | `chat_draw_image` | 按提示词现场画图并转 `base64://` 发送到聊天窗口（需开启 `imageGen`，支持带角色参考图） |
 | **本地表情包** | `meme_list` / `meme_send` / `meme_save` | 浏览、发送或偷图收藏到 `tools/meme/`（自动去重与路径安全校验） |
-| **Chat 原生互动** | `qq_reply_message` / `qq_send_poke` / `qq_get_forward_msg` / `qq_forward_messages` / `qq_list_stickers` / `qq_send_sticker` | 引用回复、拍一拍、展开/读取合并转发（新收到的转发会自动展开并入库）、单条/打包转发消息、发送收藏表情 |
-| **跨聊传话** | `qq_dm_owner` / `qq_send_to_group` | 群内悄悄私聊管理员打小报告（带冷却）；管理员私聊遥控向群里带话（鉴权锁死） |
+| **Chat 原生互动** | `chat_reply_message` / `chat_send_poke` / `chat_get_forward_msg` / `chat_forward_messages` / `chat_list_stickers` / `chat_send_sticker` | 引用回复、拍一拍、展开/读取合并转发（新收到的转发会自动展开并入库）、单条/打包转发消息、发送收藏表情 |
+| **跨聊传话** | `chat_dm_owner` / `chat_send_to_group` | 群内悄悄私聊管理员打小报告（带冷却）；管理员私聊遥控向群里带话（鉴权锁死） |
 
 ---
 

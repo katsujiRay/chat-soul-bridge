@@ -3,7 +3,7 @@
  *
  * 为什么用 Python 读写 state/memory.db：
  *   Node 22 内置 node:sqlite 未编译 FTS5 扩展，而 Python 标准库 sqlite3 原生内置 FTS5。
- *   写入侧维护一个常驻 `--stdio` Python 子进程（串行队列），避免每条 QQ 消息都冷启动进程；
+ *   写入侧维护一个常驻 `--stdio` Python 子进程（串行队列），避免每条 聊天消息都冷启动进程；
  *   查询侧按需调用 recall.py（支持 FTS5 + LIKE + 可选向量 RRF 融合 + 隐私范围硬过滤）。
  */
 import { execFile, spawn } from 'node:child_process';
@@ -36,7 +36,7 @@ export function configureMemoryDb({ pythonBin: customBin = '' } = {}) {
   }
 }
 
-// 轻量常驻 Python 写入子进程（--stdio），省去每条 QQ 消息都冷启动一次 Python
+// 轻量常驻 Python 写入子进程（--stdio），省去每条 聊天消息都冷启动一次 Python
 let writerProc = null;
 let writerQueue = Promise.resolve();
 let pendingResolvers = [];
@@ -103,7 +103,7 @@ export async function closeMemoryDbWriter() {
   }
 }
 
-/** 根据 QQ 消息特征计算静态权重与分层 */
+/** 根据 聊天消息特征计算静态权重与分层 */
 function scoreMessageWeight({ text = '', scope = 'private', isOwner = false, isSelf = false, isTriggered = false }) {
   const len = String(text).trim().length;
   let w = 0.45;
@@ -206,7 +206,7 @@ export async function recallFromDb({
   tier = 'default',
   semantic = 'off',
 } = {}) {
-  // 查询前先排空待落盘的写入队列，确保刚刚收发的消息立刻可被 qq_recall 检索到
+  // 查询前先排空待落盘的写入队列，确保刚刚收发的消息立刻可被 chat_recall 检索到
   await flushMemoryDbWrites();
 
   const args = [RECALL_SCRIPT];

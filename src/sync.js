@@ -2,10 +2,10 @@
  * 离线记忆库确定性同步门控（不依赖死等固定秒数，收敛落盘后明确返回 status: "success"）
  *
  * 解决两个实战痛点：
- *   1. 只开了 SnowLuma 还没登录 QQ 时，不会在 WS open 第 0 秒扑空，而是持续探测直到 QQ 真正在线；
- *   2. QQ 刚登录同步离线记录耗时不固定，采用“连续两轮快照指纹收敛检测”：
- *      - QQ 早就开着时约 2.5 秒即可收敛完成；
- *      - QQ 刚登录正在持续涌入离线记录时，自动续探直到最新 message_id 不再变化；
+ *   1. 只开了 SnowLuma 还没登录 账号 时，不会在 WS open 第 0 秒扑空，而是持续探测直到聊天窗口 真正在线；
+ *   2. 客户端刚登录同步离线记录耗时不固定，采用“连续两轮快照指纹收敛检测”：
+ *      - 账号 早就开着时约 2.5 秒即可收敛完成；
+ *      - 客户端刚登录正在持续涌入离线记录时，自动续探直到最新 message_id 不再变化；
  *      - 逐条 await 写入 state/memory.db 并预热内存 recentBuffers，全部 commit 后返回 { status: "success", ... }，
  *        调用方收到 success 信号后再安全进入下一步（如离线未读补回）。
  */
@@ -52,7 +52,7 @@ export function markSyncHandled(chatKey, messageId = '', ts = Date.now() / 1000)
 }
 
 /** 提取 OneBot 历史消息中的纯文本、@ 标记、合并转发 ID 与时间戳 */
-function parseHistoryMessage(msg, botQQ) {
+function parseHistoryMessage(msg, botId) {
   let isAtMe = false;
   let text = '';
   const forwardIds = [];
@@ -61,7 +61,7 @@ function parseHistoryMessage(msg, botQQ) {
     let hasImage = false;
     for (const seg of msg.message) {
       if (seg.type === 'text' && seg.data?.text) parts.push(seg.data.text);
-      else if (seg.type === 'at' && botQQ && String(seg.data?.qq) === String(botQQ)) isAtMe = true;
+      else if (seg.type === 'at' && botId && String(seg.data?.qq) === String(botId)) isAtMe = true;
       else if (seg.type === 'image') hasImage = true;
       else if (seg.type === 'forward' && seg.data?.id) {
         const fid = String(seg.data.id);
@@ -72,7 +72,7 @@ function parseHistoryMessage(msg, botQQ) {
     text = parts.join('').trim() || (hasImage ? '[图片]' : '');
   } else {
     text = String(msg.raw_message || '').trim();
-    if (botQQ && text.includes(`[CQ:at,qq=${botQQ}]`)) isAtMe = true;
+    if (botId && text.includes(`[CQ:at,qq=${botId}]`)) isAtMe = true;
     for (const m of text.matchAll(/\[CQ:forward,[^\]]*id=([^,\]]+)[^\]]*\]/g)) {
       forwardIds.push(String(m[1]));
     }
@@ -84,8 +84,8 @@ function parseHistoryMessage(msg, botQQ) {
   return { text, isAtMe, forwardIds, who, rawName, ts, messageId };
 }
 
-/** 探测 QQ 客户端是否已通过 OneBot 真正登录在线（不只是 WS 端口通了） */
-export async function checkQqOnline(sendOneBot) {
+/** 探测 Chat 客户端是否已通过 OneBot 真正登录在线（不只是 WS 端口通了） */
+export async function checkClientOnline(sendOneBot) {
   try {
     const statusRes = await sendOneBot('get_status', {});
     const st = statusRes?.data || statusRes || {};
@@ -110,10 +110,10 @@ export async function checkQqOnline(sendOneBot) {
 }
 
 /**
- * 持续等待直到 QQ 客户端真正登录上线（支持 SnowLuma 先启动、QQ 稍后才扫码登录的场景）
+ * 持续等待直到 Chat 客户端真正登录上线（支持 SnowLuma 先启动、账号 稍后才扫码登录的场景）
  * @param {number} maxWaitMs 0 表示持续等待直到上线或 shouldStop() 返回 true
  */
-export async function waitForQqReady(
+export async function waitForClientReady(
   sendOneBot,
   { pollIntervalMs = 3000, maxWaitMs = 0, log = () => {}, shouldStop = () => false } = {}
 ) {
@@ -121,16 +121,16 @@ export async function waitForQqReady(
   let warnedWaiting = false;
 
   while (!shouldStop()) {
-    const res = await checkQqOnline(sendOneBot);
+    const res = await checkClientOnline(sendOneBot);
     if (res.online) {
       return { ok: true, userId: res.userId };
     }
     if (!warnedWaiting) {
-      log('SnowLuma 已连接，但 QQ 客户端尚未登录上线，等待 QQ 登录后再同步记忆库...');
+      log('SnowLuma 已连接，但 Chat 客户端尚未登录上线，等待 客户端登录后再同步记忆库...');
       warnedWaiting = true;
     }
     if (maxWaitMs > 0 && Date.now() - startAt >= maxWaitMs) {
-      return { ok: false, reason: '等待 QQ 客户端上线超时' };
+      return { ok: false, reason: '等待 Chat 客户端上线超时' };
     }
     await sleep(Math.max(1000, Number(pollIntervalMs) || 3000));
   }
@@ -142,7 +142,7 @@ function resolveSyncTargets(config) {
   const denyPriv = new Set((config.deny?.private || []).map(String));
   const denyGrp = new Set((config.deny?.groups || []).map(String));
 
-  const privateIds = [...new Set([config.ownerQQ, ...(config.allow?.private || [])].filter(Boolean).map(String))]
+  const privateIds = [...new Set([config.ownerId, ...(config.allow?.private || [])].filter(Boolean).map(String))]
     .filter((id) => !denyPriv.has(id));
   const groupIds = [
     ...new Set(
@@ -231,7 +231,7 @@ export async function syncMemoryAndCatchup({
     };
   }
 
-  // 收敛探测：连续两次快照指纹一致即判定 QQ 离线同步已完成，立刻进入落盘阶段
+  // 收敛探测：连续两次快照指纹一致即判定 离线同步已完成，立刻进入落盘阶段
   let latestSnap = await fetchSnapshot(targets, sendOneBot, count);
   let probeCount = 1;
   while (probeCount < Math.max(2, maxProbes) && !shouldStop()) {
@@ -246,8 +246,8 @@ export async function syncMemoryAndCatchup({
     if (same) break;
   }
 
-  const botQQ = String(config.snowluma?.botQQ || '');
-  const ownerQQ = String(config.ownerQQ || '');
+  const botId = String(config.snowluma?.botId || '');
+  const ownerId = String(config.ownerId || '');
   const persona = getPersona();
   const botName = persona?.name || 'Bot';
   // 合并人设角色名（排除默认占位 Bot）+ 人设唤醒关键词 + 配置追加关键词，统一用于离线未读唤醒判定
@@ -285,7 +285,7 @@ export async function syncMemoryAndCatchup({
     const parsedItems = [];
 
     for (const rawMsg of rawList) {
-      const p = parseHistoryMessage(rawMsg, botQQ);
+      const p = parseHistoryMessage(rawMsg, botId);
       if (!p.text || /^(\/reset|\/清空|重置记忆)$/i.test(p.text)) continue;
 
       let displayText = p.text;
@@ -311,8 +311,8 @@ export async function syncMemoryAndCatchup({
         }
       }
 
-      const isSelf = Boolean(botQQ) && String(p.who) === botQQ;
-      const isOwner = Boolean(ownerQQ) && String(p.who) === ownerQQ;
+      const isSelf = Boolean(botId) && String(p.who) === botId;
+      const isOwner = Boolean(ownerId) && String(p.who) === ownerId;
       if (isSelf && p.ts > lastSelfTs) lastSelfTs = p.ts;
 
       const speaker = resolveSpeakerIdentity(p.who, p.rawName, config, botName);
@@ -344,7 +344,7 @@ export async function syncMemoryAndCatchup({
                 ? { message_type: 'group', group_id: Number(t.groupId), user_id: p.who }
                 : { message_type: 'private', user_id: p.who };
             const impScope = resolveImpressionScope(pseudoEv, {
-              ownerQQ: config.ownerQQ,
+              ownerId: config.ownerId,
               trustedGroups: config.memoryPrivacy?.trustedGroups || [],
               privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
             });
@@ -396,7 +396,7 @@ export async function syncMemoryAndCatchup({
     let catchupMode = '';
 
     if (t.scope === 'private') {
-      const ownerEligible = afterMentionCutoff.filter((m) => m.isOwner || t.userId === ownerQQ);
+      const ownerEligible = afterMentionCutoff.filter((m) => m.isOwner || t.userId === ownerId);
       const afterNormal = ownerEligible.filter((m) => m.ts > normalCutoffTs);
       if (afterNormal.length > 0) {
         selectedMessages = afterNormal.slice(-unreadCap);

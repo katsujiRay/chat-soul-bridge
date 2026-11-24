@@ -6,7 +6,7 @@
  *   2. 零空转轮询：配合主入口的「单一精准预约 setTimeout」，全局最多只挂 1 个定时器，
  *      没定时待办时 0 定时器、0% CPU 占用；
  *   3. 7 天温柔确认机制：未完成的普通待办超过 7 天不擅自静默删掉，而是随口问主人一次
- *      “还要不要做”，标记 staleAskedAt 防反复催促，等主人确认不做后再由 qq_todo(done) 删掉；
+ *      “还要不要做”，标记 staleAskedAt 防反复催促，等主人确认不做后再由 chat_todo(done) 删掉；
  *   4. 严格隐私隔离：仅在管理员私聊与信任亲密小群生效，绝不泄露给外部普通群聊。
  */
 import fs from 'node:fs';
@@ -339,5 +339,5 @@ export function formatTodosForPrompt(maxItems = 5, nowMs = Date.now()) {
     return `#${it.id} ${it.content}${extra.length ? `(${extra.join(',')})` : ''}`;
   });
   const more = list.length > shown.length ? ` 等共${list.length}条` : '';
-  return `[待办小纸条（办完或主人确认不做时调 qq_todo done 删掉）：${parts.join('；')}${more}]`;
+  return `[待办小纸条（办完或主人确认不做时调 chat_todo done 删掉）：${parts.join('；')}${more}]`;
 }

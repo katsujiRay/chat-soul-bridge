@@ -6,8 +6,8 @@
     "wsUrl": "ws://127.0.0.1:3001/?access_token=your_ws_access_token",
     "httpUrl": "http://127.0.0.1:3000",
     "accessToken": "your_http_access_token",
-    "botQQ": 1000000000,
-    "_comment_fields": "wsUrl=正向WebSocket地址; httpUrl=HTTP接口地址; accessToken=HTTP鉴权令牌; botQQ=机器人自身QQ号(必填,用于过滤自发消息与识别@)"
+    "botId": 1000000000,
+    "_comment_fields": "wsUrl=正向WebSocket地址; httpUrl=HTTP接口地址; accessToken=HTTP鉴权令牌; botId=机器人自身账号(必填,用于过滤自发消息与识别@)"
   },
 
   "llm": {
@@ -56,7 +56,7 @@
         "fallbackModels": []
       },
       "antigravity": {
-        "_comment": "【可选】Google Antigravity CLI（protocol: agy-cli）：复用本机已登录的 agy 账号凭证，通过 stream-json 无头长连接运行，免 API Key 并原生桥接全部 QQ 工具；binPath 留空自动探测，model 留空走默认模型",
+        "_comment": "【可选】Google Antigravity CLI（protocol: agy-cli）：复用本机已登录的 agy 账号凭证，通过 stream-json 无头长连接运行，免 API Key 并原生桥接全部 Chat 工具；binPath 留空自动探测，model 留空走默认模型",
         "protocol": "agy-cli",
         "binPath": "",
         "model": "",
@@ -68,11 +68,11 @@
   "_comment_proxy": "【3. 网络代理（可选）】HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890）；若已开 TUN 全局代理或在 .env 配了 HTTPS_PROXY 则留空；127.0.0.1/localhost 自动直连",
   "proxyUrl": "",
 
-  "_comment_ownerQQ": "【4. 必配：管理员/主人 QQ 号】拥有私聊全量记忆、好感度/心情绑定、动态待办、跨群传话(qq_send_to_group)、跨聊转发、接收悄悄话(qq_dm_owner)等专属权限",
-  "ownerQQ": 1234567890,
+  "_comment_ownerId": "【4. 必配：管理员/主人 账号】拥有私聊全量记忆、好感度/心情绑定、动态待办、跨群传话(chat_send_to_group)、跨聊转发、接收悄悄话(chat_dm_owner)等专属权限",
+  "ownerId": 1234567890,
 
   "identity": {
-    "_comment": "【5. 身份认知与防冒充】程序按 QQ 号硬校验身份前缀（如「主人·昵称」「同群AI伙伴·昵称」「群友·昵称」）防改群名片冒充；ownerTitle=对管理员称呼; ownerNickname=固定昵称(留空读QQ名); aiBots=静态标记同群其他AI机器人的QQ号与简称（仅用于防双AI死循环互怼，init 多开会自动互填）；所有人类熟人与好友关系均为动态增减，统一存入 state/impressions.db（聊天中通过 qq_impression_update 实时热增删，无需改本文件）",
+    "_comment": "【5. 身份认知与防冒充】程序按 账号硬校验身份前缀（如「主人·昵称」「同群AI伙伴·昵称」「群友·昵称」）防改群名片冒充；ownerTitle=对管理员称呼; ownerNickname=固定昵称(留空读账号昵称); aiBots=静态标记同群其他AI机器人的账号与简称（仅用于防双AI死循环互怼，init 多开会自动互填）；所有人类熟人与好友关系均为动态增减，统一存入 state/impressions.db（聊天中通过 chat_impression_update 实时热增删，无需改本文件）",
     "ownerTitle": "主人",
     "ownerNickname": "",
     "aiBots": {}
@@ -82,12 +82,12 @@
   "allowAllGroups": false,
   "allowAllPrivate": false,
   "allow": {
-    "_comment": "白名单：private 填允许私聊的 QQ 号数组（建议至少填管理员 QQ）；groups 填允许发言的群号数组",
+    "_comment": "白名单：private 填允许私聊的账号数组（建议至少填管理员账号）；groups 填允许发言的群号数组",
     "private": [1234567890],
     "groups": [987654321]
   },
   "deny": {
-    "_comment": "黑名单（优先级最高）：填入的 QQ 号或群号一律静默忽略，且禁止被跨群传话或转发",
+    "_comment": "黑名单（优先级最高）：填入的 账号或群号一律静默忽略，且禁止被跨群传话或转发",
     "private": [],
     "groups": []
   },
@@ -116,7 +116,7 @@
   },
 
   "reply": {
-    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大 QQ 气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880)",
+    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大 聊天消息气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880)",
     "maxBurstParts": 4,
     "maxImageBytes": 5242880
   },
@@ -159,7 +159,7 @@
   },
 
   "forward": {
-    "_comment": "【14. 合并转发解析与发送（src/forward.js）】autoExpand=收到合并转发时是否自动调用 get_forward_msg 展开内容并入库(默认true); maxExpandItems=单条合并转发最多展开条数(默认25); maxExpandDepth=嵌套合并转发最大展开层数(默认2); maxExpandImages=自动拉取转发内附带图片上限(默认4张); maxSendNodes=机器人调用 qq_forward_messages 单次最多打包节点数(默认20)",
+    "_comment": "【14. 合并转发解析与发送（src/forward.js）】autoExpand=收到合并转发时是否自动调用 get_forward_msg 展开内容并入库(默认true); maxExpandItems=单条合并转发最多展开条数(默认25); maxExpandDepth=嵌套合并转发最大展开层数(默认2); maxExpandImages=自动拉取转发内附带图片上限(默认4张); maxSendNodes=机器人调用 chat_forward_messages 单次最多打包节点数(默认20)",
     "autoExpand": true,
     "maxExpandItems": 25,
     "maxExpandDepth": 2,
@@ -174,7 +174,7 @@
   },
 
   "imageGen": {
-    "_comment": "【16. AI 画图工具（qq_draw_image，可选）】enabled=true 且填好对应 provider 的 model 与 apiKey 后激活；未启用时自动隐藏工具不占 token。支持 gemini 原生生图（可带 assets/ 角色参考图）或 openai 兼容 /images/generations（如硅基流动 Kolors/FLUX、GPT Image 等）",
+    "_comment": "【16. AI 画图工具（chat_draw_image，可选）】enabled=true 且填好对应 provider 的 model 与 apiKey 后激活；未启用时自动隐藏工具不占 token。支持 gemini 原生生图（可带 assets/ 角色参考图）或 openai 兼容 /images/generations（如硅基流动 Kolors/FLUX、GPT Image 等）",
     "enabled": false,
     "active": "siliconflow",
     "cooldownMs": 30000,
@@ -207,14 +207,14 @@
   },
 
   "impressions": {
-    "_comment": "【17. 人物印象库（state/impressions.db，按 QQ 号建档与按群隔离）】enabled=总开关; injectMaxUsers=每轮最多自动注入几人的极简印象(默认2,超大水群可改1防注意力漂移); maxCharsPerUser=每人印象最多注入字数(默认60)",
+    "_comment": "【17. 人物印象库（state/impressions.db，按 账号建档与按群隔离）】enabled=总开关; injectMaxUsers=每轮最多自动注入几人的极简印象(默认2,超大水群可改1防注意力漂移); maxCharsPerUser=每人印象最多注入字数(默认60)",
     "enabled": true,
     "injectMaxUsers": 2,
     "maxCharsPerUser": 60
   },
 
   "mediaArchive": {
-    "_comment": "【18. 图片记忆归档（state/media/）】enabled=收图/画图自动本地归档防 QQ 外链过期; autoCaption=发完回复后异步补写简短图注进 memory.db 供 qq_recall 搜图; captionModel=可选轻量视觉模型ID(留空复用当前模型); maxFiles/maxTotalMB=LRU 自动清理上限",
+    "_comment": "【18. 图片记忆归档（state/media/）】enabled=收图/画图自动本地归档防 图片外链过期; autoCaption=发完回复后异步补写简短图注进 memory.db 供 chat_recall 搜图; captionModel=可选轻量视觉模型ID(留空复用当前模型); maxFiles/maxTotalMB=LRU 自动清理上限",
     "enabled": true,
     "autoCaption": true,
     "captionModel": "",
@@ -223,7 +223,7 @@
   },
 
   "startupCatchup": {
-    "_comment": "【19. 上线确定性离线同步与补回门控】enabled=总开关; replyUnread=同步返回 status=success 后自动补回离线未读; replyGroupOwner=离线期间管理员在群里发言是否补回; preloadCount=每会话预热条数(默认30); onlinePollMs=等待QQ上线探测间隔(3秒); probeIntervalMs=指纹收敛间隔(2.5秒); maxProbes=最大探测轮数(6); maxAgeMinutes=普通离线消息只补回最近多少分钟内(默认120分钟防挖坟); mentionMaxAgeMinutes=明确@机器人或提到角色名/唤醒词的离线消息放宽至多少分钟内(默认720分钟=12小时); mentionReplyLastOnly=提到/艾特机器人时是否只采取最后那一条(默认true,false则合并多条); maxUnreadPerChat=普通离线合并补回单会话最多带入几条未读(默认8)",
+    "_comment": "【19. 上线确定性离线同步与补回门控】enabled=总开关; replyUnread=同步返回 status=success 后自动补回离线未读; replyGroupOwner=离线期间管理员在群里发言是否补回; preloadCount=每会话预热条数(默认30); onlinePollMs=等待客户端上线探测间隔(3秒); probeIntervalMs=指纹收敛间隔(2.5秒); maxProbes=最大探测轮数(6); maxAgeMinutes=普通离线消息只补回最近多少分钟内(默认120分钟防挖坟); mentionMaxAgeMinutes=明确@机器人或提到角色名/唤醒词的离线消息放宽至多少分钟内(默认720分钟=12小时); mentionReplyLastOnly=提到/艾特机器人时是否只采取最后那一条(默认true,false则合并多条); maxUnreadPerChat=普通离线合并补回单会话最多带入几条未读(默认8)",
     "enabled": true,
     "replyUnread": true,
     "replyGroupOwner": true,
@@ -238,7 +238,7 @@
   },
 
   "paths": {
-    "_comment": "【20. 外部资源与目录路径（相对当前 Bot 目录 bots/bot_<QQ>/，支持保存人设即热更新）】personaFile=本 Bot 的纯角色人设卡(位于 bots/bot_<QQ>/roles/persona.txt); toolsPromptFile=通用工具与安全规范(本目录未放时自动回退共用仓库根目录 roles/persona-tools-detail.txt); memeDir=本 Bot 表情包目录; diaryDir=本 Bot 每日 Markdown 日记目录; pythonBin=可选自定义 Python3 可执行文件路径(留空自动探测)",
+    "_comment": "【20. 外部资源与目录路径（相对当前 Bot 目录 bots/bot_<ID>/，支持保存人设即热更新）】personaFile=本 Bot 的纯角色人设卡(位于 bots/bot_<ID>/roles/persona.txt); toolsPromptFile=通用工具与安全规范(本目录未放时自动回退共用仓库根目录 roles/persona-tools-detail.txt); memeDir=本 Bot 表情包目录; diaryDir=本 Bot 每日 Markdown 日记目录; pythonBin=可选自定义 Python3 可执行文件路径(留空自动探测)",
     "personaFile": "roles/persona.txt",
     "toolsPromptFile": "roles/persona-tools-detail.txt",
     "memeDir": "tools/meme",

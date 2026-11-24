@@ -3,9 +3,9 @@
  *
  * 特点：
  *   - 零写死绝对路径：由用户在 npm run init 或命令行 --snowluma-dir 动态输入协议端安装目录；
- *   - 兼容 SnowLuma（config/onebot_<QQ>.json，networks.httpServers / wsServers）
- *     与 NapCat（config/onebot11_<QQ>.json，network.httpServers / websocketServers）；
- *   - 可选调用标准 OneBot v11 get_login_info 探测在线状态与 QQ 昵称，方便自动生成 Bot 文件夹。
+ *   - 兼容 SnowLuma（config/onebot_<ID>.json，networks.httpServers / wsServers）
+ *     与 NapCat（config/onebot11_<ID>.json，network.httpServers / websocketServers）；
+ *   - 可选调用标准 OneBot v11 get_login_info 探测在线状态与昵称，方便自动生成 Bot 文件夹。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -53,7 +53,7 @@ export function discoverSnowLumaConfigs(inputDir) {
     path.join(baseDir, 'napcat', 'config'),
   ].filter((d, idx, arr) => arr.indexOf(d) === idx && fs.existsSync(d) && fs.statSync(d).isDirectory());
 
-  const seenQq = new Set();
+  const seenId = new Set();
   const bots = [];
 
   for (const dir of candidateDirs) {
@@ -65,11 +65,11 @@ export function discoverSnowLumaConfigs(inputDir) {
     }
 
     for (const fileName of entries.sort()) {
-      // 匹配 SnowLuma: onebot_<QQ>.json 以及 NapCat: onebot11_<QQ>.json
+      // 匹配 SnowLuma: onebot_<ID>.json 以及 NapCat: onebot11_<ID>.json
       const m = fileName.match(/^onebot(?:11)?_(\d{5,12})\.json$/i);
       if (!m) continue;
-      const botQQ = m[1];
-      if (seenQq.has(botQQ)) continue;
+      const botId = m[1];
+      if (seenId.has(botId)) continue;
 
       const fullPath = path.join(dir, fileName);
       let raw;
@@ -96,10 +96,10 @@ export function discoverSnowLumaConfigs(inputDir) {
       const httpToken = String(httpSrv?.accessToken ?? httpSrv?.token ?? '').trim();
       const wsToken = String(wsSrv?.accessToken ?? wsSrv?.token ?? '').trim();
 
-      seenQq.add(botQQ);
+      seenId.add(botId);
       bots.push({
-        botQQ: Number(botQQ),
-        botQQStr: botQQ,
+        botId: Number(botId),
+        botIdStr: botId,
         configFile: fullPath,
         httpUrl,
         wsUrl,
@@ -120,7 +120,7 @@ export function discoverSnowLumaConfigs(inputDir) {
   };
 }
 
-/** 轻量探测每个发现的 Bot 当前是否在线，并读取 QQ 昵称（超时 2s 不阻塞） */
+/** 轻量探测每个发现的 Bot 当前是否在线，并读取 昵称（超时 2s 不阻塞） */
 export async function probeDiscoveredBots(bots = []) {
   const results = [];
   for (const bot of bots) {

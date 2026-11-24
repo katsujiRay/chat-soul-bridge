@@ -2,7 +2,7 @@
  * 本地短期对话上下文库（state/context.db）
  *
  * 作用：
- *   为每个聊天窗口（private:<QQ> / group:<群号>）维护一份滑动窗口式的短期多轮对话记录，
+ *   为每个聊天窗口（private:<ID> / group:<群号>）维护一份滑动窗口式的短期多轮对话记录，
  *   配合无状态 API 调用（如 Gemini store: false / OpenAI / Claude）实现：
  *   1. 永不受服务端会话过期时间限制；
  *   2. 切换主力/备用模型时上下文无缝延续；

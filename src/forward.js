@@ -252,7 +252,7 @@ export async function resolveForwardMessage(
 /** 构造 OneBot v11 兼容自定义合并转发节点（同时携带 uin/user_id 与 name/nickname 兼容各协议端） */
 function buildCustomNode({ userId, nickname, content }) {
   const uid = String(userId || '10000');
-  const name = String(nickname || 'QQ用户').slice(0, 40);
+  const name = String(nickname || '群友').slice(0, 40);
   const segs = Array.isArray(content)
     ? content
     : [{ type: 'text', data: { text: String(content || '').slice(0, 1000) } }];
@@ -276,7 +276,7 @@ function isOneBotOk(res) {
 }
 
 /** 将一批 message_id 通过 get_msg 还原为自定义节点（用于跨群/跨聊 ID 节点被协议端拒绝时的自动兜底） */
-async function hydrateMessageIdsToCustomNodes(sendOneBot, messageIds, { botQQ, botName }) {
+async function hydrateMessageIdsToCustomNodes(sendOneBot, messageIds, { botId, botName }) {
   const nodes = [];
   for (const rawId of messageIds) {
     const idStr = String(rawId || '').trim();
@@ -286,7 +286,7 @@ async function hydrateMessageIdsToCustomNodes(sendOneBot, messageIds, { botQQ, b
       const res = await sendOneBot('get_msg', { message_id: numId });
       const data = res?.data;
       if (!data) continue;
-      const uid = String(data.sender?.user_id || data.user_id || botQQ || '10000');
+      const uid = String(data.sender?.user_id || data.user_id || botId || '10000');
       const name = String(data.sender?.card || data.sender?.nickname || botName || uid);
       const parsed = extractSegmentsContent(
         Array.isArray(data.message) && data.message.length > 0 ? data.message : data.raw_message || ''
@@ -317,13 +317,13 @@ export async function sendForwardMessages(
     messageIds = [],
     nodes = [],
     asBundle = false,
-    botQQ = '',
+    botId = '',
     botName = 'Bot',
   } = {}
 ) {
   const tid = Number(targetId);
   if (!Number.isFinite(tid) || tid <= 0) {
-    return { ok: false, error: '目标群号或 QQ 号无效' };
+    return { ok: false, error: '目标群号或 账号无效' };
   }
   const isGroup = targetType === 'group';
   const forwardAction = isGroup ? 'send_group_forward_msg' : 'send_private_forward_msg';
@@ -379,7 +379,7 @@ export async function sendForwardMessages(
       }
     } catch {}
 
-    const hydrated = await hydrateMessageIdsToCustomNodes(sendOneBot, cleanIds, { botQQ, botName });
+    const hydrated = await hydrateMessageIdsToCustomNodes(sendOneBot, cleanIds, { botId, botName });
     if (hydrated.length === 0) {
       return { ok: false, error: '无法通过 message_id 拉取原消息内容进行转发（消息可能已过期或编号不对）' };
     }
@@ -403,13 +403,13 @@ export async function sendForwardMessages(
   // 情况 3：自定义节点合并转发（可同时混合前面指定的 message_ids）
   const builtNodes = [];
   if (cleanIds.length > 0) {
-    const hydrated = await hydrateMessageIdsToCustomNodes(sendOneBot, cleanIds, { botQQ, botName });
+    const hydrated = await hydrateMessageIdsToCustomNodes(sendOneBot, cleanIds, { botId, botName });
     builtNodes.push(...hydrated);
   }
   for (const n of cleanNodes) {
     builtNodes.push(
       buildCustomNode({
-        userId: n.sender_qq || botQQ || '10000',
+        userId: n.sender_id || botId || '10000',
         nickname: n.sender_name || botName || 'Bot',
         content: String(n.content).trim(),
       })

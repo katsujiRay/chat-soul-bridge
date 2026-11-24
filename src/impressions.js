@@ -6,11 +6,11 @@
  * 设计核心：
  *   1. 两张表分工：
  *      - user_profiles   ：按 (user_id, scope_key) 存储最新昵称、曾用名、互动次数、关系、标签与精炼总印象；
- *      - impression_logs ：记录每次印象变化的原因与时间，平时不注入 Prompt，仅在 qq_recall 翻旧账时按需附带。
+ *      - impression_logs ：记录每次印象变化的原因与时间，平时不注入 Prompt，仅在 chat_recall 翻旧账时按需附带。
  *   2. 严格隐私隔离（scope_key 分区）：
  *      - 管理员私聊 & 信任亲密小群共享 scope_key = 'private'；
  *      - 普通外部群严格锁死在 'group:<群号>'，绝不串群或泄露私密印象；
- *      - 非管理员私聊锁死在 'private:<QQ号>'。
+ *      - 非管理员私聊锁死在 'private:<账号>'。
  *   3. 大群防注意力飘移（O(1) 恒定上限）：
  *      - 每轮最多按优先级挑出 1~2 位直接相关者（当前发言者 -> 被引用者 -> @提及者 -> 文本点名熟人）；
  *      - 没有印象卡的纯路人 0 字注入，且印象行只用于当轮上下文、不落盘进 state/context.db。
@@ -159,7 +159,7 @@ export function seedImpressionsFromConfig(config) {
   return seeded;
 }
 
-/** 0.2ms 快速查询某 QQ 在当前隐私分区下的动态关系标签（供 resolveSpeakerIdentity 实时生效，无需重启） */
+/** 0.2ms 快速查询某 账号 在当前隐私分区下的动态关系标签（供 resolveSpeakerIdentity 实时生效，无需重启） */
 export function getDynamicSpeakerRelation(userId, readScopes = ['private']) {
   const prof = loadBestProfileForUser(userId, readScopes);
   return prof?.relation ? String(prof.relation).trim() : '';
@@ -209,7 +209,7 @@ function safeParseArray(raw) {
  */
 export function resolveImpressionScope(
   event,
-  { ownerQQ = null, trustedGroups = [], privateMemoryGroups = [] } = {}
+  { ownerId = null, trustedGroups = [], privateMemoryGroups = [] } = {}
 ) {
   const trustedSet = new Set((trustedGroups || []).map(String));
   const privateMemSet = new Set((privateMemoryGroups || []).map(String));
@@ -217,7 +217,7 @@ export function resolveImpressionScope(
 
   if (msgType === 'private') {
     const uid = String(event?.user_id || '').trim();
-    if (ownerQQ && uid === String(ownerQQ)) {
+    if (ownerId && uid === String(ownerId)) {
       // 管理员私聊：全库可读（含各群熟人档案），写入固定落 private 分区
       return { writeScope: 'private', readScopes: ['*'] };
     }
@@ -282,7 +282,7 @@ export function touchUserInteraction({ userId, nickname = '', scopeKey = 'privat
 }
 
 /**
- * 主动更新人物印象（由模型工具 qq_impression_update 调用，带冷却与长度硬上限）
+ * 主动更新人物印象（由模型工具 chat_impression_update 调用，带冷却与长度硬上限）
  */
 export function updateUserImpression({
   userId,
@@ -434,7 +434,7 @@ function hasMeaningfulImpression(profile) {
 }
 
 /**
- * 供 qq_recall 搭车调用：查询某位用户的完整印象档案与最近演变日志（严格遵循 readScopes 隔离）
+ * 供 chat_recall 搭车调用：查询某位用户的完整印象档案与最近演变日志（严格遵循 readScopes 隔离）
  */
 export function getUserImpressionDetail({ userId, readScopes = ['private'], logLimit = 3 }) {
   const profile = loadBestProfileForUser(userId, readScopes);
@@ -466,7 +466,7 @@ export function getUserImpressionDetail({ userId, readScopes = ['private'], logL
 }
 
 /**
- * 供 qq_recall 按 QQ 号或昵称/曾用名搭车查询人物印象详档与演变记录（严格遵循 readScopes 隐私边界）
+ * 供 chat_recall 按 账号或昵称/曾用名搭车查询人物印象详档与演变记录（严格遵循 readScopes 隐私边界）
  */
 export function findUserImpressionByQuery({ query = '', fallbackUserId = '', readScopes = ['private'], logLimit = 3 }) {
   const scopes = (readScopes || []).filter(Boolean);
@@ -527,7 +527,7 @@ export function findRelevantImpressions({
   speakerId = '',
   quotedUserId = '',
   mentionedUserIds = [],
-  botQQ = '',
+  botId = '',
   text = '',
   readScopes = ['private'],
   maxUsers = 2,
@@ -539,7 +539,7 @@ export function findRelevantImpressions({
   const scopes = (readScopes || []).filter(Boolean);
   if (scopes.length === 0) return '';
 
-  const selfStr = String(botQQ || '').trim();
+  const selfStr = String(botId || '').trim();
   const orderedIds = [];
   const seen = new Set();
   const pushId = (raw) => {
@@ -645,7 +645,7 @@ export function findRelevantImpressions({
     }
     const body = bodyBits.length
       ? bodyBits.join('；').slice(0, maxLen)
-      : '认识的熟人/群友（细节可用 qq_recall 翻看往事）';
+      : '认识的熟人/群友（细节可用 chat_recall 翻看往事）';
     return `${head}：${body}`;
   });
 

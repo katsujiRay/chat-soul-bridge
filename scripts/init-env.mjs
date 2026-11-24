@@ -63,12 +63,12 @@ function parseSelection(input, total) {
   return [...indices].sort((a, b) => a - b);
 }
 
-function readExistingOwnerQQ() {
+function readExistingOwnerId() {
   try {
     const rootCfgPath = path.join(CODE_ROOT, 'config.json');
     if (fs.existsSync(rootCfgPath)) {
       const parsed = JSON.parse(fs.readFileSync(rootCfgPath, 'utf8'));
-      const n = Number(parsed?.ownerQQ || 0);
+      const n = Number(parsed?.ownerId || parsed?.ownerQQ || 0);
       if (Number.isFinite(n) && n > 0 && n !== 1234567890) return n;
     }
   } catch {}
@@ -97,7 +97,7 @@ async function runSnowLumaWizard(presetDir = '') {
       return false;
     }
     if (scan.bots.length === 0) {
-      console.warn(`[init] 在 ${scan.scannedDir} 下未找到 onebot_<QQ>.json / onebot11_<QQ>.json 配置文件。`);
+      console.warn(`[init] 在 ${scan.scannedDir} 下未找到 onebot_<ID>.json / onebot11_<ID>.json 配置文件。`);
       return false;
     }
 
@@ -110,7 +110,7 @@ async function runSnowLumaWizard(presetDir = '') {
       const statusStr = b.online ? '在线' : '离线/未登录';
       const syncHint = b.historySyncEnabled ? '' : ' [提示: historySync=false]';
       console.log(
-        `  [${idx + 1}] QQ ${b.botQQStr}${nickStr} | HTTP:${b.httpPort || '-'} WS:${b.wsPort || '-'} | ${statusStr}${syncHint}`
+        `  [${idx + 1}] 账号 ${b.botIdStr}${nickStr} | HTTP:${b.httpPort || '-'} WS:${b.wsPort || '-'} | ${statusStr}${syncHint}`
       );
     });
 
@@ -123,17 +123,17 @@ async function runSnowLumaWizard(presetDir = '') {
       return false;
     }
 
-    const defaultOwner = readExistingOwnerQQ();
+    const defaultOwner = readExistingOwnerId();
     const ownerHint = defaultOwner ? `（默认 ${defaultOwner}，直接回车沿用）` : '（可选，直接回车稍后手填）';
-    const ownerInput = (await rl.question(`请输入管理员/主人 QQ 号${ownerHint}: `)).trim();
-    const ownerQQ = Number(ownerInput || defaultOwner || 0) || 0;
+    const ownerInput = (await rl.question(`请输入管理员/主人账号${ownerHint}: `)).trim();
+    const ownerId = Number(ownerInput || defaultOwner || 0) || 0;
 
     const chosen = pickedIdx.map((idx) => {
       const bot = probed[idx];
       return {
         ...bot,
-        // 直接按 QQ 账号命名（bot_<QQ>），与 SnowLuma 的 onebot_<QQ>.json 一一对应，彻底杜绝非法路径字符与重名冲突
-        folderName: `bot_${bot.botQQStr}`,
+        // 直接按 Chat 账号命名（bot_<ID>），与 SnowLuma 的 onebot_<ID>.json 一一对应，彻底杜绝非法路径字符与重名冲突
+        folderName: `bot_${bot.botIdStr}`,
       };
     });
 
@@ -144,7 +144,7 @@ async function runSnowLumaWizard(presetDir = '') {
         botsRoot: path.join(CODE_ROOT, 'bots'),
         folderName: bot.folderName,
         snowlumaBot: bot,
-        ownerQQ,
+        ownerId,
         peerBots: chosen.length > 1 ? chosen : [],
         initState: true,
         log,
@@ -219,7 +219,7 @@ async function main() {
       codeRoot: CODE_ROOT,
       botsRoot: path.dirname(ROOT),
       folderName: path.basename(ROOT),
-      ownerQQ: readExistingOwnerQQ(),
+      ownerId: readExistingOwnerId(),
       initState: false,
       log,
     });

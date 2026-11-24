@@ -2,7 +2,7 @@
  * 本地轻量图片记忆归档库（state/media/）
  *
  * 作用：
- *   QQ 的图片 CDN 链接（gchat.qpic.cn）通常几天后会过期失效。
+ *   账号 的图片 CDN 链接（gchat.qpic.cn）通常几天后会过期失效。
  *   本模块将触发交互时的收图、AI 画出的图，以及历史追回的原图按 message_id 归档到本地 state/media/：
  *     1. 按魔数识别真实格式（png / jpg / gif / webp）+ SHA-1 去重；
  *     2. 记录来源分区（scope / groupId / userId），在外部群查询时严格校验防跨群泄密；
