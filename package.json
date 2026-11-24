@@ -1,0 +1,23 @@
+{
+  "name": "chat-soul-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight multi-model QQ (OneBot v11) AI bridge with 4-layer local memory, multi-bot isolation, and role decoupling",
+  "homepage": "https://github.com/katsujiRay/chat-soul-bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/katsujiRay/chat-soul-bridge.git"
+  },
+  "scripts": {
+    "init": "node scripts/init-env.mjs",
+    "start": "node scripts/start-bot.mjs",
+    "sync-memory": "node scripts/sync-offline.mjs",
+    "recover-media": "node scripts/recover-media.mjs",
+    "import-history": "node scripts/import-history.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^3.2.0",
+    "undici": "^6.29.1"
+  }
+}

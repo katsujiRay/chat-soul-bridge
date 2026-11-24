@@ -1,0 +1,248 @@
+{
+  "_comment": "复制本文件为 config.json 后按注释填写；全项目所有开关、阈值、冷却与相对路径均统一收口于此；带 _comment 的字段仅供阅读说明，程序会自动忽略",
+
+  "snowluma": {
+    "_comment": "【1. 必配：OneBot v11 协议端连接（SnowLuma / NapCat / Lagrange 等）】",
+    "wsUrl": "ws://127.0.0.1:3001/?access_token=your_ws_access_token",
+    "httpUrl": "http://127.0.0.1:3000",
+    "accessToken": "your_http_access_token",
+    "botQQ": 1000000000,
+    "_comment_fields": "wsUrl=正向WebSocket地址; httpUrl=HTTP接口地址; accessToken=HTTP鉴权令牌; botQQ=机器人自身QQ号(必填,用于过滤自发消息与识别@)"
+  },
+
+  "llm": {
+    "_comment": "【2. 必配：多大模型统一路由】修改 active 即可秒切模型；apiKey 推荐写 \"${环境变量名}\" 引用 .env（防截图/提交泄密），也支持直接填明文",
+    "active": "gemini",
+    "temperature": 1.0,
+    "maxTokens": 1024,
+    "thinkingLevel": "",
+    "maxContextTurns": 20,
+    "_comment_params": "active=当前启用的提供商名称(对应下方providers键名); temperature=生成随机度; maxTokens=单次回复最大token; thinkingLevel=全局思考强度(留空走模型默认; 可选 none/minimal/low/medium/high/xhigh, 可在单个provider内覆盖); maxContextTurns=本地 state/context.db 保留的最近对话轮数",
+    "providers": {
+      "gemini": {
+        "_comment": "Google Gemini 原生协议；baseUrl 留空走官方地址，填值可接反代；model 填写 Gemini 模型 ID",
+        "protocol": "gemini",
+        "apiKey": "${GEMINI_API_KEY}",
+        "baseUrl": "",
+        "model": "",
+        "thinkingLevel": "",
+        "fallbackModels": []
+      },
+      "deepseek": {
+        "_comment": "DeepSeek（OpenAI 兼容协议）；例如 deepseek-chat / deepseek-reasoner（非思考模型建议 thinkingLevel 留空）",
+        "protocol": "openai",
+        "apiKey": "${DEEPSEEK_API_KEY}",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "model": "",
+        "thinkingLevel": "",
+        "fallbackModels": []
+      },
+      "openai": {
+        "_comment": "OpenAI 及任意兼容接口（GPT / Qwen / Kimi / GLM / OpenRouter / 本地 Ollama 等，改 baseUrl 和 model 即可）",
+        "protocol": "openai",
+        "apiKey": "${OPENAI_API_KEY}",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "",
+        "thinkingLevel": "",
+        "fallbackModels": []
+      },
+      "claude": {
+        "_comment": "Anthropic Claude 原生协议（兼容官方及 Claude 中转站；可额外写 thinkingBudget 精确指定 token 预算）",
+        "protocol": "anthropic",
+        "apiKey": "${ANTHROPIC_API_KEY}",
+        "baseUrl": "https://api.anthropic.com",
+        "model": "",
+        "thinkingLevel": "",
+        "fallbackModels": []
+      },
+      "antigravity": {
+        "_comment": "【可选】Google Antigravity CLI（protocol: agy-cli）：复用本机已登录的 agy 账号凭证，通过 stream-json 无头长连接运行，免 API Key 并原生桥接全部 QQ 工具；binPath 留空自动探测，model 留空走默认模型",
+        "protocol": "agy-cli",
+        "binPath": "",
+        "model": "",
+        "thinkingLevel": "low"
+      }
+    }
+  },
+
+  "_comment_proxy": "【3. 网络代理（可选）】HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890）；若已开 TUN 全局代理或在 .env 配了 HTTPS_PROXY 则留空；127.0.0.1/localhost 自动直连",
+  "proxyUrl": "",
+
+  "_comment_ownerQQ": "【4. 必配：管理员/主人 QQ 号】拥有私聊全量记忆、好感度/心情绑定、动态待办、跨群传话(qq_send_to_group)、跨聊转发、接收悄悄话(qq_dm_owner)等专属权限",
+  "ownerQQ": 1234567890,
+
+  "identity": {
+    "_comment": "【5. 身份认知与防冒充】程序按 QQ 号硬校验身份前缀（如「主人·昵称」「同群AI伙伴·昵称」「群友·昵称」）防改群名片冒充；ownerTitle=对管理员称呼; ownerNickname=固定昵称(留空读QQ名); aiBots=静态标记同群其他AI机器人的QQ号与简称（仅用于防双AI死循环互怼，init 多开会自动互填）；所有人类熟人与好友关系均为动态增减，统一存入 state/impressions.db（聊天中通过 qq_impression_update 实时热增删，无需改本文件）",
+    "ownerTitle": "主人",
+    "ownerNickname": "",
+    "aiBots": {}
+  },
+
+  "_comment_access": "【6. 必配：白名单与黑名单】默认 allowAllGroups/allowAllPrivate 均为 false（最安全，仅放行 allow 白名单内对象）；deny 黑名单永远优先级最高",
+  "allowAllGroups": false,
+  "allowAllPrivate": false,
+  "allow": {
+    "_comment": "白名单：private 填允许私聊的 QQ 号数组（建议至少填管理员 QQ）；groups 填允许发言的群号数组",
+    "private": [1234567890],
+    "groups": [987654321]
+  },
+  "deny": {
+    "_comment": "黑名单（优先级最高）：填入的 QQ 号或群号一律静默忽略，且禁止被跨群传话或转发",
+    "private": [],
+    "groups": []
+  },
+
+  "memoryPrivacy": {
+    "_comment": "【7. 记忆与隐私三级隔离】trustedGroups=亲密小群(与主人私聊完全互通记忆/小本本/日记/待办); privateMemoryGroups=熟人互通群(打通主人私聊聊天记忆、长期小本本与人物印象供心里有数，但代码层硬禁日记/待办/情感/私聊原图/小本本读写工具，并强制注入群聊防泄密约束，绝不外泄隐私); 其余未填入的普通外群代码层全量隔离",
+    "trustedGroups": [987654321],
+    "privateMemoryGroups": []
+  },
+
+  "groupTrigger": {
+    "_comment": "【8. 群聊唤醒与防多 Bot 互怼策略】atMention=@唤醒; replyToMe=引用机器人消息唤醒; keywords=额外硬唤醒词(默认自动读 persona.txt); topicKeywords=额外兴趣话题词(自动合并 persona.txt 的 topics); topicBoostStep=每点话题热度增加概率(0.25); topicMaxBoost=话题热度最高加成(0.45); ownerRandomReplyProbability=管理员说话时的优先唤醒概率(0.55); ownerReplyCooldownMs=管理员独立冷却(10秒); ownerFollowupWindowMs=刚回完话后管理员连聊加成窗口(90秒内额外+0.25); randomReplyProbability=普通群友默认随机插话概率(0.30); botRandomReplyProbability=同群其他AI机器人接话概率(0.15); randomReplyCooldownMs=非管理员随机插话冷却(30秒); maxConsecutiveWithoutOwner=无管理员时最多连续接话轮数(防双AI死循环)",
+    "atMention": true,
+    "replyToMe": true,
+    "keywords": [],
+    "topicKeywords": [],
+    "topicBoostStep": 0.25,
+    "topicMaxBoost": 0.45,
+    "ownerRandomReplyProbability": 0.55,
+    "ownerReplyCooldownMs": 10000,
+    "ownerFollowupWindowMs": 90000,
+    "randomReplyProbability": 0.3,
+    "botRandomReplyProbability": 0.15,
+    "randomReplyCooldownMs": 30000,
+    "maxConsecutiveWithoutOwner": 2
+  },
+
+  "reply": {
+    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大 QQ 气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880)",
+    "maxBurstParts": 4,
+    "maxImageBytes": 5242880
+  },
+
+  "proactive": {
+    "_comment": "【10. 定时冷场主动冒泡】enabled=总开关; privateEnabled=是否允许私聊管理员冒泡; groupIds=允许主动冒泡的群号列表; idleThresholdMs=冷场多久才考虑冒泡(默认45分钟); checkIntervalMinMs/MaxMs=随机巡检间隔(默认30~60分钟); probability=触发概率; quietStartHour/EndHour=夜间免打扰时段(23点~次日8点,期间不冒泡且7天待办确认自动推迟到次日早8点后)",
+    "enabled": false,
+    "privateEnabled": true,
+    "groupIds": [],
+    "idleThresholdMs": 2700000,
+    "checkIntervalMinMs": 1800000,
+    "checkIntervalMaxMs": 3600000,
+    "probability": 0.35,
+    "quietStartHour": 23,
+    "quietEndHour": 8
+  },
+
+  "contextFade": {
+    "_comment": "【11. 短期对话滑窗时间阶梯淡出（state/context.db）】fullWindowHours=多少小时内保留完整多轮对话(默认12小时); overnightMaxTurns=隔夜过渡段最多保留末尾几轮尾巴(默认4轮,防止隔夜失忆又不复活旧碎话); maxAgeHours=超过多少小时自动淡出翻篇(默认48小时,查更早记录自动走 state/memory.db)",
+    "fullWindowHours": 12,
+    "overnightMaxTurns": 4,
+    "maxAgeHours": 48
+  },
+
+  "emotion": {
+    "_comment": "【12. 好感度与心情双向联动引擎（state/emotion.json，仅对管理员私聊生效）】enabled=总开关; moodHalfLifeHours=即时心情自然回归平静的半衰期小时数(默认4小时); affectionCooldownMinutes=主动调整好感度的最小冷却分钟(默认60分钟); milestoneCooldownHours=里程碑涨幅(+3及以上)冷却小时(默认24小时); dailyNormalGainCap=每日普通主动好感涨幅上限(默认+2)",
+    "enabled": true,
+    "moodHalfLifeHours": 4,
+    "affectionCooldownMinutes": 60,
+    "milestoneCooldownHours": 24,
+    "dailyNormalGainCap": 2
+  },
+
+  "todos": {
+    "_comment": "【13. 动态待办清单（state/todos.json，零轮询单一预约定时器，仅管理员私聊/亲密小群可见）】enabled=总开关; maxItems=动态数组上限条数(默认20); staleDays=无定时待办超过几天后自动随口确认“还要不要做”(默认7天,不擅自静默删除); injectMaxItems=每轮当轮胶囊最多注入几条(默认5,空列表0字注入)",
+    "enabled": true,
+    "maxItems": 20,
+    "staleDays": 7,
+    "injectMaxItems": 5
+  },
+
+  "forward": {
+    "_comment": "【14. 合并转发解析与发送（src/forward.js）】autoExpand=收到合并转发时是否自动调用 get_forward_msg 展开内容并入库(默认true); maxExpandItems=单条合并转发最多展开条数(默认25); maxExpandDepth=嵌套合并转发最大展开层数(默认2); maxExpandImages=自动拉取转发内附带图片上限(默认4张); maxSendNodes=机器人调用 qq_forward_messages 单次最多打包节点数(默认20)",
+    "autoExpand": true,
+    "maxExpandItems": 25,
+    "maxExpandDepth": 2,
+    "maxExpandImages": 4,
+    "maxSendNodes": 20
+  },
+
+  "tools": {
+    "_comment": "【15. 联网检索工具开关】webSearch=内置免费网页搜索与正文抓取(推荐保持 true); googleSearch=Gemini 原生搜索工具(免费层级无配额，付费用户可改 true)",
+    "googleSearch": false,
+    "webSearch": true
+  },
+
+  "imageGen": {
+    "_comment": "【16. AI 画图工具（qq_draw_image，可选）】enabled=true 且填好对应 provider 的 model 与 apiKey 后激活；未启用时自动隐藏工具不占 token。支持 gemini 原生生图（可带 assets/ 角色参考图）或 openai 兼容 /images/generations（如硅基流动 Kolors/FLUX、GPT Image 等）",
+    "enabled": false,
+    "active": "siliconflow",
+    "cooldownMs": 30000,
+    "providers": {
+      "siliconflow": {
+        "_comment": "硅基流动等 OpenAI 兼容生图接口（如 Kwai-Kolors/Kolors 或 black-forest-labs/FLUX.1-schnell）",
+        "protocol": "openai",
+        "apiKey": "${SILICONFLOW_API_KEY}",
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "model": "",
+        "size": "1024x1024"
+      },
+      "gemini": {
+        "_comment": "Google Gemini 原生生图（如 gemini-nano-banana-2.1，需付费层级 Key）",
+        "protocol": "gemini",
+        "apiKey": "${GEMINI_API_KEY}",
+        "baseUrl": "",
+        "model": "",
+        "fallbackModels": []
+      },
+      "openai": {
+        "_comment": "OpenAI 官方或兼容中转（如 gpt-image-1）",
+        "protocol": "openai",
+        "apiKey": "${OPENAI_API_KEY}",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "",
+        "size": "1024x1024"
+      }
+    }
+  },
+
+  "impressions": {
+    "_comment": "【17. 人物印象库（state/impressions.db，按 QQ 号建档与按群隔离）】enabled=总开关; injectMaxUsers=每轮最多自动注入几人的极简印象(默认2,超大水群可改1防注意力漂移); maxCharsPerUser=每人印象最多注入字数(默认60)",
+    "enabled": true,
+    "injectMaxUsers": 2,
+    "maxCharsPerUser": 60
+  },
+
+  "mediaArchive": {
+    "_comment": "【18. 图片记忆归档（state/media/）】enabled=收图/画图自动本地归档防 QQ 外链过期; autoCaption=发完回复后异步补写简短图注进 memory.db 供 qq_recall 搜图; captionModel=可选轻量视觉模型ID(留空复用当前模型); maxFiles/maxTotalMB=LRU 自动清理上限",
+    "enabled": true,
+    "autoCaption": true,
+    "captionModel": "",
+    "maxFiles": 300,
+    "maxTotalMB": 200
+  },
+
+  "startupCatchup": {
+    "_comment": "【19. 上线确定性离线同步与补回门控】enabled=总开关; replyUnread=同步返回 status=success 后自动补回离线未读; replyGroupOwner=离线期间管理员在群里发言是否补回; preloadCount=每会话预热条数(默认30); onlinePollMs=等待QQ上线探测间隔(3秒); probeIntervalMs=指纹收敛间隔(2.5秒); maxProbes=最大探测轮数(6); maxAgeMinutes=普通离线消息只补回最近多少分钟内(默认120分钟防挖坟); mentionMaxAgeMinutes=明确@机器人或提到角色名/唤醒词的离线消息放宽至多少分钟内(默认720分钟=12小时); mentionReplyLastOnly=提到/艾特机器人时是否只采取最后那一条(默认true,false则合并多条); maxUnreadPerChat=普通离线合并补回单会话最多带入几条未读(默认8)",
+    "enabled": true,
+    "replyUnread": true,
+    "replyGroupOwner": true,
+    "preloadCount": 30,
+    "onlinePollMs": 3000,
+    "probeIntervalMs": 2500,
+    "maxProbes": 6,
+    "maxAgeMinutes": 120,
+    "mentionMaxAgeMinutes": 720,
+    "mentionReplyLastOnly": true,
+    "maxUnreadPerChat": 8
+  },
+
+  "paths": {
+    "_comment": "【20. 外部资源与目录路径（相对当前 Bot 目录 bots/bot_<QQ>/，支持保存人设即热更新）】personaFile=本 Bot 的纯角色人设卡(位于 bots/bot_<QQ>/roles/persona.txt); toolsPromptFile=通用工具与安全规范(本目录未放时自动回退共用仓库根目录 roles/persona-tools-detail.txt); memeDir=本 Bot 表情包目录; diaryDir=本 Bot 每日 Markdown 日记目录; pythonBin=可选自定义 Python3 可执行文件路径(留空自动探测)",
+    "personaFile": "roles/persona.txt",
+    "toolsPromptFile": "roles/persona-tools-detail.txt",
+    "memeDir": "tools/meme",
+    "diaryDir": "tools/Diary",
+    "pythonBin": ""
+  }
+}
