@@ -19,6 +19,7 @@ import { ensureEmotionFile } from '../src/emotion.js';
 import { ensureImpressionsDb } from '../src/impressions.js';
 import { ensureMediaArchiveDir } from '../src/media-archive.js';
 import { CODE_ROOT, getBotRuntime } from '../src/runtime.js';
+import { ensureRateLimitFile } from '../src/safety.js';
 import { discoverSnowLumaConfigs, probeDiscoveredBots } from '../src/snowluma-discover.js';
 import { ensureTodosFile } from '../src/todos.js';
 
@@ -202,6 +203,8 @@ async function initCurrentDirectory() {
   log(emoExisted ? '情感状态文件已存在: state/emotion.json' : '已新建情感状态文件: state/emotion.json');
   const todoExisted = ensureTodosFile();
   log(todoExisted ? '动态待办清单已存在: state/todos.json' : '已新建动态待办清单: state/todos.json');
+  const rlExisted = ensureRateLimitFile();
+  log(rlExisted ? '风控限流记录已存在: state/rate-limit.json' : '已新建风控限流记录: state/rate-limit.json');
 
   // 5. 友好提示缺失的配置文件
   if (!fs.existsSync(path.join(ROOT, 'config.json'))) {

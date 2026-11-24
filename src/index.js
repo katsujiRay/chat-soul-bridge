@@ -53,6 +53,7 @@ import {
   recordRecentMessage,
 } from './memory.js';
 import { listPersonaReferenceImages, loadPersona } from './persona.js';
+import { createSafetyGuard, ensureRateLimitFile } from './safety.js';
 import { markSyncHandled, syncMemoryAndCatchup, waitForClientReady } from './sync.js';
 import {
   configureTodos,
@@ -141,7 +142,28 @@ function getSystemInstruction(chatKey = '') {
   return `${base}${toolsGuide}${memories}`;
 }
 
-async function sendOneBot(action, payload) {
+function collectConfiguredSecrets(cfg) {
+  const list = [];
+  if (cfg?.snowluma?.accessToken) list.push(cfg.snowluma.accessToken);
+  for (const p of Object.values(cfg?.llm?.providers || {})) {
+    if (p && typeof p === 'object' && typeof p.apiKey === 'string' && p.apiKey.trim()) {
+      list.push(p.apiKey.trim());
+    }
+  }
+  for (const p of Object.values(cfg?.imageGen?.providers || {})) {
+    if (p && typeof p === 'object' && typeof p.apiKey === 'string' && p.apiKey.trim()) {
+      list.push(p.apiKey.trim());
+    }
+  }
+  return list;
+}
+
+const safetyGuard = createSafetyGuard(config.safety, {
+  extraSecrets: collectConfiguredSecrets(config),
+  log,
+});
+
+async function rawSendOneBot(action, payload) {
   const url = `${config.snowluma.httpUrl.replace(/\/$/, '')}/${action}`;
   const headers = { 'Content-Type': 'application/json' };
   if (config.snowluma.accessToken) {
@@ -158,6 +180,8 @@ async function sendOneBot(action, payload) {
   }
   return res.json().catch(() => ({}));
 }
+
+const sendOneBot = safetyGuard.wrapSendOneBot(rawSendOneBot);
 
 const tools = buildTools({
   enableGoogleSearch: config.tools?.googleSearch === true,
@@ -291,6 +315,25 @@ function enqueue(chatKey, task) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// 追踪各会话收到新消息的序号：用于长间隔停顿时检测插话并提前收尾，避免跨轮错位
+const chatIncomingSeq = new Map();
+
+async function sleepInterruptible(ms, shouldInterrupt) {
+  const total = Math.max(0, Number(ms) || 0);
+  if (total <= 400 || typeof shouldInterrupt !== 'function') {
+    await sleep(total);
+    return;
+  }
+  const deadline = Date.now() + total;
+  while (Date.now() < deadline) {
+    if (shouldInterrupt()) {
+      await sleep(Math.min(350, Math.max(0, deadline - Date.now())));
+      return;
+    }
+    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+  }
+}
+
 // 记录机器人自己发出去的消息 ID（用来判断群友是否引用了机器人）
 const myMessageIds = new Set();
 function rememberMyMessageId(res) {
@@ -303,10 +346,48 @@ function rememberMyMessageId(res) {
   }
 }
 
+/** 将超长单段按自然标点智能切分为 <= maxChars 的子段，避免超长被整条拒发 */
+function splitLongSegment(seg, maxChars = 500) {
+  const text = String(seg || '').trim();
+  if (!text) return [];
+  if (!maxChars || maxChars <= 0 || text.length <= maxChars) return [text];
+
+  const chunks = [];
+  let rest = text;
+  const minCut = Math.max(20, Math.floor(maxChars * 0.45));
+  while (rest.length > maxChars) {
+    const slice = rest.slice(0, maxChars);
+    let cut = -1;
+    for (let i = slice.length - 1; i >= minCut; i--) {
+      const ch = slice[i];
+      if ('\n。！？!?；;'.includes(ch)) {
+        cut = i + 1;
+        break;
+      }
+    }
+    if (cut < 0) {
+      for (let i = slice.length - 1; i >= minCut; i--) {
+        const ch = slice[i];
+        if ('，,、 '.includes(ch)) {
+          cut = i + 1;
+          break;
+        }
+      }
+    }
+    if (cut < 0) cut = maxChars;
+    const head = rest.slice(0, cut).trim();
+    if (head) chunks.push(head);
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
 /**
- * 将长回复按换行拆分为 1~4 条 聊天消息气泡短消息，并剥离常见 Markdown 加粗符号。
+ * 将长回复按换行拆分为 1~maxParts 条聊天消息气泡短消息，剥离常见 Markdown 加粗符号，
+ * 并对单条超过 maxChars（默认 500 字）的段落自动按标点二次切分。
  */
-function splitBurstMessages(text, maxParts = 4) {
+function splitBurstMessages(text, maxParts = 4, maxChars = 500) {
   const cleaned = text
     .replace(/\r\n/g, '\n')
     .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -316,36 +397,73 @@ function splitBurstMessages(text, maxParts = 4) {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
-  if (lines.length <= maxParts) return lines;
-  return [...lines.slice(0, maxParts - 1), lines.slice(maxParts - 1).join('\n')];
+  const grouped =
+    lines.length <= maxParts
+      ? lines
+      : [...lines.slice(0, maxParts - 1), lines.slice(maxParts - 1).join('\n')];
+
+  if (!maxChars || maxChars <= 0) return grouped;
+  const result = [];
+  for (const part of grouped) {
+    result.push(...splitLongSegment(part, maxChars));
+  }
+  // 极端超长防刷屏上限：最多允许 maxParts + 2 条气泡
+  const hardCap = Math.max(maxParts, maxParts + 2);
+  if (result.length > hardCap) {
+    const kept = result.slice(0, hardCap);
+    const last = kept[kept.length - 1];
+    kept[kept.length - 1] =
+      last.length >= maxChars ? `${last.slice(0, Math.max(1, maxChars - 1))}…` : `${last}…`;
+    return kept;
+  }
+  return result;
 }
 
 /**
- * 拟人化分条发送回复（条间按字数随机停顿 0.7~2.8s）：
+ * 拟人化分条发送回复（条间按字数停顿 + 可配概率长停顿 + 逐条 try/catch 容错）：
  *   逐条按真实 OneBot message_id 写入 state/memory.db 与内存 recentBuffers，
  *   确保与离线同步拉取的群/私聊历史 1 对 1 精准去重，且引用任意一条气泡都能秒命中缓存。
  */
 async function sendReply(event, text) {
   const maxBurst = Math.max(1, Math.min(8, Number(config.reply?.maxBurstParts ?? 4)));
-  const parts = splitBurstMessages(text, maxBurst);
+  const maxChars = Math.max(0, Number(config.safety?.maxMessageChars ?? 500));
+  const parts = splitBurstMessages(text, maxBurst, maxChars);
   if (parts.length === 0) return '';
 
   const chatKey =
     event.message_type === 'group' ? `group:${event.group_id}` : `private:${event.user_id}`;
   const botName = getPersona().name;
+  const startSeq = chatIncomingSeq.get(chatKey) || 0;
+  const longGapProb = Math.max(0, Math.min(0.6, Number(config.reply?.longGapProbability ?? 0.12)));
+  const longGapMin = Math.max(1000, Number(config.reply?.longGapMinMs ?? 3000));
+  const longGapMax = Math.max(longGapMin, Number(config.reply?.longGapMaxMs ?? 5500));
   let lastMsgId = '';
 
   for (let i = 0; i < parts.length; i++) {
     if (i > 0) {
-      const delay = Math.min(2800, 700 + parts[i].length * 35 + Math.floor(Math.random() * 400));
-      await sleep(delay);
+      const isLongGap = longGapProb > 0 && Math.random() < longGapProb;
+      const delay = isLongGap
+        ? longGapMin + Math.floor(Math.random() * Math.max(1, longGapMax - longGapMin))
+        : Math.min(2800, 700 + parts[i].length * 35 + Math.floor(Math.random() * 400));
+      await sleepInterruptible(delay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
     }
+
     let res;
-    if (event.message_type === 'private') {
-      res = await sendOneBot('send_private_msg', { user_id: event.user_id, message: parts[i] });
-    } else if (event.message_type === 'group') {
-      res = await sendOneBot('send_group_msg', { group_id: event.group_id, message: parts[i] });
+    try {
+      if (event.message_type === 'private') {
+        res = await sendOneBot('send_private_msg', { user_id: event.user_id, message: parts[i] });
+      } else if (event.message_type === 'group') {
+        res = await sendOneBot('send_group_msg', { group_id: event.group_id, message: parts[i] });
+      }
+    } catch (err) {
+      const code = String(err?.code || '');
+      log(`发送第 ${i + 1}/${parts.length} 条失败 (${chatKey}): ${err?.message || err}`);
+      if (code === 'RISK_COOLDOWN' || code.startsWith('RATE_LIMIT_')) {
+        break;
+      }
+      continue;
     }
+
     rememberMyMessageId(res);
     const msgId = res?.data?.message_id != null ? String(res.data.message_id) : '';
     if (msgId) lastMsgId = msgId;
@@ -769,6 +887,13 @@ async function maybeSendProactive(chatKey, targetEvent) {
   }
   if (Math.random() >= prob) return;
 
+  const wakeCat = targetEvent.message_type === 'group' ? 'group_auto' : 'private';
+  const wakeCheck = safetyGuard.checkAndRecordWake(chatKey, wakeCat);
+  if (!wakeCheck.ok) {
+    log(`[safety] 跳过主动冒泡 (${chatKey}): ${wakeCheck.error}`);
+    return;
+  }
+
   enqueue(chatKey, async () => {
     if (proactiveSentSinceLastActivity.has(chatKey)) return;
     proactiveSentSinceLastActivity.add(chatKey);
@@ -997,6 +1122,11 @@ async function handlePoke(event) {
   };
 
   log(`收到拍一拍 ${chatKey} from ID:${event.user_id}`);
+  const wakeCheck = safetyGuard.checkAndRecordWake(chatKey, isGroup ? 'group_mention' : 'private');
+  if (!wakeCheck.ok) {
+    log(`[safety] 跳过拍一拍回复 (${chatKey}): ${wakeCheck.error}`);
+    return;
+  }
   enqueue(chatKey, async () => {
     try {
       let directSent = false;
@@ -1067,6 +1197,7 @@ async function handleMessage(event) {
     event.message_type === 'private'
       ? `private:${event.user_id}`
       : `group:${event.group_id}`;
+  chatIncomingSeq.set(chatKey, (chatIncomingSeq.get(chatKey) || 0) + 1);
   const senderName = event.sender?.card || event.sender?.nickname || String(event.user_id);
   const impScope = resolveImpressionScope(event, {
     ownerId: config.ownerId,
@@ -1164,6 +1295,18 @@ async function handleMessage(event) {
     llm.resetSession(chatKey);
     await sendReply(event, '好嘞，刚才的短期对话上下文已经清空啦，长期小本本和历史记录都还保留着哦！');
     log(`已重置会话记忆: ${chatKey}`);
+    return;
+  }
+
+  const wakeCategory =
+    event.message_type === 'private'
+      ? 'private'
+      : ['at', 'reply', 'name'].includes(triggerReason)
+        ? 'group_mention'
+        : 'group_auto';
+  const wakeCheck = safetyGuard.checkAndRecordWake(chatKey, wakeCategory);
+  if (!wakeCheck.ok) {
+    log(`[safety] 跳过本次唤醒 (${chatKey}, reason=${triggerReason}): ${wakeCheck.error}`);
     return;
   }
 
@@ -1583,7 +1726,19 @@ seedImpressionsFromConfig(config);
 ensureMediaArchiveDir();
 ensureDiaryDir(diaryDir);
 ensureTodosFile();
+ensureRateLimitFile();
 onTodosChanged(() => scheduleNextTodoCheck());
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.once(sig, () => {
+    safetyGuard.flushStateNow();
+    process.exit(0);
+  });
+}
+if (safetyGuard.config.enabled) {
+  log(
+    `风控护栏已启用: 单会话 ${safetyGuard.config.maxSendPerMinute}/分 ${safetyGuard.config.maxSendPerHour}/时 | 全局 ${safetyGuard.config.globalMaxSendPerMinute}/分 ${safetyGuard.config.globalMaxSendPerHour}/时 | 最小发包间距 ${safetyGuard.config.minGlobalSendGapMs}ms | 单条上限 ${safetyGuard.config.maxMessageChars}字`
+  );
+}
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);
 log(`本地人物印象库已就绪: ${getImpressionsDbPath()}`);
 initMemoryDb()

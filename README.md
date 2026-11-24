@@ -35,8 +35,9 @@
   - 自动下载 Chat 图片发送给当前多模态大模型理解（Gemini / GPT / Claude 等均支持）。
   - 支持机器人自主**偷图收藏（SHA-1 自动去重 + 魔数识别格式）**、按关键词检索并发送本地 `tools/meme/` 里的表情包；也支持人工直接拖图进文件夹即刻识别。
   - 支持配置角色三视图/参考图（`assets/`），按需调用 `get_self_image` 查看或 `send_self_image` 发图，未放图时自动跳过、不浪费 token。
-- **拟人化 Chat 聊天节奏**：
-  - 按换行自动拆成 1~4 条短消息，带拟真打字停顿逐条发送，自动清理 Markdown 粗体。
+- **拟人化 Chat 聊天节奏 & 内置风控护栏（`src/safety.js`）**：
+  - 按换行自动拆成 1~4 条短消息，带拟真打字停顿与可配随机长停顿（对方插话自动提前收尾），超 500 字按标点智能切分、逐条 `try/catch` 容错不中断。
+  - **统一发信出口防刷屏与审计**：覆盖文字、表情包、生图、转发与拍一拍全部 OneBot 发送动作，内置单会话 + 全账号双层滑窗频率上限（预占额度 + 失败自动回滚，持久化至 `state/rate-limit.json`）、轻量级 350ms 全局发包节流锁、分场景唤醒限流、敏感路径/密钥外发审计，以及 OneBot `retcode` 连续异常自动冷却熔断。
   - **人设与工具彻底解耦 + 热更新**：修改 `roles/persona.txt` 或 `roles/persona-tools-detail.txt` 保存即生效，无需重启；换角色只需替换人设文件，角色名与群聊唤醒词自动同步。
 - **智能群聊唤醒 + 多 Bot 防互怼护栏**：
   - 支持 `@` 提及、引用机器人消息、关键词、拍一拍（戳一戳）、按概率随机冒泡。
@@ -61,6 +62,7 @@ Chat 客户端 <--> OneBot v11 网关 (SnowLuma / NapCat 等)
                ├── src/emotion.js     ──> state/emotion.json (好感度与心情双向联动系统)
                ├── src/todos.js       ──> state/todos.json (动态待办清单 + 零轮询单定时器准点提醒 + 超7天随口确认)
                ├── src/identity.js    ──> 代码层 Chat 身份防冒充与场景认知
+               ├── src/safety.js      ──> 统一风控护栏（双层限流/全局发包节流/敏感审计/retcode 熔断）
                ├── src/sync.js        ──> 确定性离线同步门控（收敛落盘返回 status: success）
                ├── src/memory.js      ──> state/memory.json & tools/Diary/YYYY-MM-DD.md
                ├── src/meme.js        ──> tools/meme/ (本地表情包百宝箱)

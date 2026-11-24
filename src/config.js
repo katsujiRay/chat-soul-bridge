@@ -71,6 +71,33 @@ export const DEFAULT_CONFIG = {
   reply: {
     maxBurstParts: 4,
     maxImageBytes: 5242880,
+    longGapProbability: 0.12,
+    longGapMinMs: 3000,
+    longGapMaxMs: 5500,
+  },
+  safety: {
+    enabled: true,
+    minGlobalSendGapMs: 350,
+    maxSendPerMinute: 8,
+    maxSendPerHour: 60,
+    globalMaxSendPerMinute: 18,
+    globalMaxSendPerHour: 120,
+    maxMessageChars: 500,
+    sensitiveCheck: true,
+    wakeLimit: {
+      enabled: true,
+      groupAutoPerMinute: 2,
+      groupAutoPerHour: 18,
+      groupMentionPerMinute: 5,
+      groupMentionPerHour: 45,
+      privatePerMinute: 10,
+      privatePerHour: 90,
+    },
+    retcodeGuard: {
+      enabled: true,
+      consecutiveFailThreshold: 3,
+      cooldownMs: 120000,
+    },
   },
   contextFade: {
     fullWindowHours: 12,
@@ -218,6 +245,17 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     snowluma.botId = raw.snowluma.botQQ;
   }
 
+  const safetyRaw = isPlainObject(raw.safety) ? stripCommentKeys(raw.safety) : {};
+  const safety = {
+    ...DEFAULT_CONFIG.safety,
+    ...(reply.maxSendPerMinute !== undefined ? { maxSendPerMinute: reply.maxSendPerMinute } : {}),
+    ...(reply.maxSendPerHour !== undefined ? { maxSendPerHour: reply.maxSendPerHour } : {}),
+    ...(reply.maxMessageChars !== undefined ? { maxMessageChars: reply.maxMessageChars } : {}),
+    ...safetyRaw,
+    wakeLimit: mergeSection(DEFAULT_CONFIG.safety.wakeLimit, safetyRaw.wakeLimit),
+    retcodeGuard: mergeSection(DEFAULT_CONFIG.safety.retcodeGuard, safetyRaw.retcodeGuard),
+  };
+
   return {
     ...raw,
     snowluma,
@@ -232,6 +270,7 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     groupTrigger: mergeSection(DEFAULT_CONFIG.groupTrigger, raw.groupTrigger),
     proactive: mergeSection(DEFAULT_CONFIG.proactive, raw.proactive),
     reply,
+    safety,
     contextFade: mergeSection(DEFAULT_CONFIG.contextFade, raw.contextFade),
     emotion: mergeSection(DEFAULT_CONFIG.emotion, raw.emotion),
     todos: mergeSection(DEFAULT_CONFIG.todos, raw.todos),
