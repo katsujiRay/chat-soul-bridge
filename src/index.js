@@ -26,6 +26,7 @@ import {
   recordDailyPassiveInteraction,
 } from './emotion.js';
 import { configureForward, resolveForwardMessage } from './forward.js';
+import { detectImageMime } from './gif.js';
 import {
   formatKnownUsersNote,
   formatSceneTag,
@@ -494,22 +495,23 @@ async function sendReply(event, text) {
   return lastMsgId;
 }
 
-/** 下载 聊天消息里的图片并编码为 base64（带超时与体积上限保护） */
+/** 下载聊天消息里的图片并编码为 base64（按魔数识别真实格式，兼容 GIF 与无标准 Content-Type 的 CDN） */
 async function downloadImage(url, maxBytes) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
     if (!res.ok) return null;
-    const contentType = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
-    if (!contentType.startsWith('image/')) return null;
+    const rawContentType = (res.headers.get('content-type') || '').split(';')[0].trim();
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length === 0 || buf.length > maxBytes) return null;
-    return { data: buf.toString('base64'), mimeType: contentType };
+    const mimeType = detectImageMime(buf, rawContentType);
+    if (!mimeType) return null;
+    return { data: buf.toString('base64'), mimeType };
   } catch {
     return null;
   }
 }
 
-/** 解析 OneBot v11 消息段数组（提取纯文本、图片 URL、合并转发 ID、引用 ID 与 @ 标记/列表） */
+/** 解析 OneBot v11 消息段数组（提取纯文本、图片/动图/商城表情 URL、合并转发 ID、引用 ID 与 @ 标记/列表） */
 function parseMessage(event) {
   const selfId = String(event.self_id || config.snowluma.botId || '');
   const textParts = [];
@@ -532,6 +534,9 @@ function parseMessage(event) {
         }
       } else if (seg.type === 'image' && seg.data?.url) {
         imageUrls.push(seg.data.url);
+      } else if (seg.type === 'mface') {
+        if (seg.data?.url) imageUrls.push(seg.data.url);
+        if (seg.data?.summary) textParts.push(String(seg.data.summary));
       } else if (seg.type === 'forward' && seg.data?.id) {
         forwardIds.push(String(seg.data.id));
       } else if (seg.type === 'reply' && seg.data?.id) {

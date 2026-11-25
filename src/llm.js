@@ -23,6 +23,43 @@ import {
   loadContextMessages,
   loadContextSteps,
 } from './context-db.js';
+import { normalizeImagesForLlm } from './gif.js';
+
+/** 将 GIF 分镜转换说明温和拼接到发给模型的当轮文本尾部（不污染持久化上下文） */
+function appendGifNotes(baseText, gifNotes = []) {
+  if (!Array.isArray(gifNotes) || gifNotes.length === 0) return baseText || '';
+  const noteBlock = `【动图分镜说明】\n${gifNotes.join('\n')}`;
+  return baseText ? `${baseText}\n${noteBlock}` : noteBlock;
+}
+
+/** 统一预处理工具返回的多模态结果（将其中可能包含的 GIF 归档图转为标准 PNG 分镜图） */
+function normalizeMultimodalParts(parts = []) {
+  if (!Array.isArray(parts) || parts.length === 0) return [];
+  const rawImages = [];
+  const imgPositions = [];
+  const out = parts.map((p) => (p && typeof p === 'object' ? { ...p } : p));
+  for (let i = 0; i < out.length; i++) {
+    const p = out[i];
+    if (p?.type === 'image' && p.data) {
+      rawImages.push({ data: p.data, mimeType: p.mime_type || p.mimeType || 'image/jpeg' });
+      imgPositions.push(i);
+    }
+  }
+  if (rawImages.length === 0) return out;
+  const { images: normImgs, gifNotes } = normalizeImagesForLlm(rawImages);
+  for (let k = 0; k < imgPositions.length && k < normImgs.length; k++) {
+    const pos = imgPositions[k];
+    out[pos] = {
+      type: 'image',
+      data: normImgs[k].data,
+      mime_type: normImgs[k].mimeType || 'image/png',
+    };
+  }
+  if (gifNotes.length > 0) {
+    out.push({ type: 'text', text: `【动图分镜说明】\n${gifNotes.join('\n')}` });
+  }
+  return out;
+}
 
 /** 单轮对话内最多允许连续调用工具的回合数，防止死循环 */
 const MAX_TOOL_ROUNDS = 6;
@@ -162,7 +199,7 @@ function createGeminiClient({
         }
         const formattedResult =
           output && Array.isArray(output.__multimodalResult)
-            ? output.__multimodalResult
+            ? normalizeMultimodalParts(output.__multimodalResult)
             : typeof output === 'string'
               ? output
               : JSON.stringify(output);
@@ -186,9 +223,12 @@ function createGeminiClient({
     resetSession: (chatKey) => clearContext(chatKey),
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
+      if (normImgs.length === 0) return '';
+      const prompt = gifNotes.length > 0 ? `${CAPTION_PROMPT}\n${gifNotes.join(' ')}` : CAPTION_PROMPT;
       const content = [
-        { type: 'text', text: CAPTION_PROMPT },
-        ...images.slice(0, 2).map((img) => ({ type: 'image', data: img.data, mime_type: img.mimeType })),
+        { type: 'text', text: prompt },
+        ...normImgs.map((img) => ({ type: 'image', data: img.data, mime_type: img.mimeType })),
       ];
       const candidates = [...new Set([preferredModel, lastWorkingModel, ...modelChain].filter(Boolean))];
       for (const targetModel of candidates) {
@@ -210,9 +250,11 @@ function createGeminiClient({
     async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
+      const effectiveText = appendGifNotes(text, gifNotes);
       const contentParts = [];
-      if (text) contentParts.push({ type: 'text', text });
-      for (const img of images) {
+      if (effectiveText) contentParts.push({ type: 'text', text: effectiveText });
+      for (const img of normImgs) {
         contentParts.push({ type: 'image', data: img.data, mime_type: img.mimeType });
       }
       if (contentParts.length === 0) return '';
@@ -338,28 +380,31 @@ function createOpenAICompatibleClient({
         } catch (err) {
           output = { ok: false, error: err?.message || String(err) };
         }
-        const textResult =
+        const normMulti =
           output && Array.isArray(output.__multimodalResult)
-            ? output.__multimodalResult
-                .filter((p) => p.type === 'text')
-                .map((p) => p.text)
-                .join('\n') || JSON.stringify({ ok: true, files: output.files || [] })
-            : typeof output === 'string'
-              ? output
-              : JSON.stringify(output);
+            ? normalizeMultimodalParts(output.__multimodalResult)
+            : null;
+        const textResult = normMulti
+          ? normMulti
+              .filter((p) => p.type === 'text')
+              .map((p) => p.text)
+              .join('\n') || JSON.stringify({ ok: true, files: output.files || [] })
+          : typeof output === 'string'
+            ? output
+            : JSON.stringify(output);
         working.push({
           role: 'tool',
           tool_call_id: tc.id,
           content: textResult,
         });
-        // OpenAI tool role 仅接受纯文本，若工具返回了参考图则附带一条多模态 user 消息
-        if (output && Array.isArray(output.__multimodalResult)) {
-          const imgs = output.__multimodalResult.filter((p) => p.type === 'image' && p.data);
+        // OpenAI tool role 仅接受纯文本，若工具返回了图片则附带一条多模态 user 消息
+        if (normMulti) {
+          const imgs = normMulti.filter((p) => p.type === 'image' && p.data);
           if (imgs.length > 0) {
             working.push({
               role: 'user',
               content: [
-                { type: 'text', text: '（以下是工具返回的形象参考图）' },
+                { type: 'text', text: '（以下是工具返回的图片）' },
                 ...imgs.map((img) => ({
                   type: 'image_url',
                   image_url: { url: `data:${img.mime_type || 'image/png'};base64,${img.data}` },
@@ -377,9 +422,12 @@ function createOpenAICompatibleClient({
     resetSession: (chatKey) => clearContext(chatKey),
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
+      if (normImgs.length === 0) return '';
+      const prompt = gifNotes.length > 0 ? `${CAPTION_PROMPT}\n${gifNotes.join(' ')}` : CAPTION_PROMPT;
       const userContent = [
-        { type: 'text', text: CAPTION_PROMPT },
-        ...images.slice(0, 2).map((img) => ({
+        { type: 'text', text: prompt },
+        ...normImgs.map((img) => ({
           type: 'image_url',
           image_url: { url: `data:${img.mimeType};base64,${img.data}` },
         })),
@@ -417,18 +465,20 @@ function createOpenAICompatibleClient({
         content: m.text,
       }));
 
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
+      const effectiveText = appendGifNotes(text, gifNotes);
       let userContent;
-      if (images.length > 0) {
+      if (normImgs.length > 0) {
         userContent = [];
-        if (text) userContent.push({ type: 'text', text });
-        for (const img of images) {
+        if (effectiveText) userContent.push({ type: 'text', text: effectiveText });
+        for (const img of normImgs) {
           userContent.push({
             type: 'image_url',
             image_url: { url: `data:${img.mimeType};base64,${img.data}` },
           });
         }
       } else {
-        userContent = text;
+        userContent = effectiveText;
       }
       if (!userContent || (Array.isArray(userContent) && userContent.length === 0)) return '';
 
@@ -554,7 +604,7 @@ function createAnthropicClient({
         }
         const formattedContent =
           output && Array.isArray(output.__multimodalResult)
-            ? output.__multimodalResult.map((p) =>
+            ? normalizeMultimodalParts(output.__multimodalResult).map((p) =>
                 p.type === 'image'
                   ? { type: 'image', source: { type: 'base64', media_type: p.mime_type || 'image/png', data: p.data } }
                   : { type: 'text', text: p.text }
@@ -578,9 +628,12 @@ function createAnthropicClient({
     resetSession: (chatKey) => clearContext(chatKey),
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
+      if (normImgs.length === 0) return '';
+      const prompt = gifNotes.length > 0 ? `${CAPTION_PROMPT}\n${gifNotes.join(' ')}` : CAPTION_PROMPT;
       const userBlocks = [
-        { type: 'text', text: CAPTION_PROMPT },
-        ...images.slice(0, 2).map((img) => ({
+        { type: 'text', text: prompt },
+        ...normImgs.map((img) => ({
           type: 'image',
           source: { type: 'base64', media_type: img.mimeType, data: img.data },
         })),
@@ -623,9 +676,11 @@ function createAnthropicClient({
         content: m.text,
       }));
 
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
+      const effectiveText = appendGifNotes(text, gifNotes);
       const userBlocks = [];
-      if (text) userBlocks.push({ type: 'text', text });
-      for (const img of images) {
+      if (effectiveText) userBlocks.push({ type: 'text', text: effectiveText });
+      for (const img of normImgs) {
         userBlocks.push({
           type: 'image',
           source: { type: 'base64', media_type: img.mimeType, data: img.data },
@@ -788,14 +843,17 @@ function createAgyCliClient({
     if (!Array.isArray(images) || images.length === 0) return [];
     fs.mkdirSync(tmpDir, { recursive: true });
     const paths = [];
-    for (let i = 0; i < Math.min(2, images.length); i++) {
+    for (let i = 0; i < Math.min(3, images.length); i++) {
       const img = images[i];
       if (!img?.data) continue;
-      const ext = String(img.mimeType || '').includes('png')
+      const mime = String(img.mimeType || '').toLowerCase();
+      const ext = mime.includes('png')
         ? '.png'
-        : String(img.mimeType || '').includes('webp')
+        : mime.includes('webp')
           ? '.webp'
-          : '.jpg';
+          : mime.includes('gif')
+            ? '.gif'
+            : '.jpg';
       const file = path.join(tmpDir, `img_${Date.now()}_${i}${ext}`);
       fs.writeFileSync(file, Buffer.from(img.data, 'base64'));
       paths.push(file);
@@ -912,11 +970,13 @@ function createAgyCliClient({
     },
     async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
       const session = ensureSession(chatKey);
-      const tempImgPaths = writeTempImages(images);
+      const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
+      const tempImgPaths = writeTempImages(normImgs);
       const extraTempPaths = [];
+      const gifHintText = gifNotes.length > 0 ? `\n【动图分镜说明】\n${gifNotes.join('\n')}` : '';
       const imgHint =
         tempImgPaths.length > 0
-          ? `\n（对方发来了 ${tempImgPaths.length} 张图片，本地路径：${tempImgPaths.join(' , ')}，如需看图可用 read_file 查看后再回复）`
+          ? `\n（对方发来了 ${tempImgPaths.length} 张图片，本地路径：${tempImgPaths.join(' , ')}，如需看图可用 read_file 查看后再回复）${gifHintText}`
           : '';
 
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
@@ -965,14 +1025,15 @@ function createAgyCliClient({
               }
             }
             if (output && Array.isArray(output.__multimodalResult)) {
-              const textParts = output.__multimodalResult.filter((p) => p.type === 'text').map((p) => p.text);
-              const imgParts = output.__multimodalResult
+              const normMulti = normalizeMultimodalParts(output.__multimodalResult);
+              const textParts = normMulti.filter((p) => p.type === 'text').map((p) => p.text);
+              const imgParts = normMulti
                 .filter((p) => p.type === 'image' && p.data)
-                .map((p) => ({ data: p.data, mimeType: p.mime_type || 'image/jpeg' }));
+                .map((p) => ({ data: p.data, mimeType: p.mime_type || 'image/png' }));
               const paths = writeTempImages(imgParts);
               extraTempPaths.push(...paths);
               resultLines.push(
-                `[${call.name}] ${textParts.join('\n')}${paths.length ? `（图片路径：${paths.join(' , ')}）` : ''}`
+                `[${call.name}] ${textParts.join('\n')}${paths.length ? `（图片路径：${paths.join(' , ')}，可用 read_file 查看）` : ''}`
               );
             } else {
               const jsonOut = typeof output === 'string' ? output : JSON.stringify(output);

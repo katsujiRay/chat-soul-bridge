@@ -31,8 +31,8 @@
   - **信任亲密小群（`memoryPrivacy.trustedGroups`）**：允许与管理员私聊互通记忆、小本本、日记与待办，不跨查其他无关群。
   - **熟人互通群（`memoryPrivacy.privateMemoryGroups`）**：打通管理员私聊日常聊天记忆、小本本与人物印象供心里有数，但**代码层硬禁日记、待办、情感、私聊原图与小本本读写工具**，并在场景与检索结果中强制附加群聊防泄密护栏，绝不把私密内容抖给外人。
   - **普通外部群**：代码层强制全量隔离——`chat_recall` 仅限当前群聊记录，禁止读取私密小本本、日记、待办和情感状态，杜绝群聊泄密。
-- **多模态看图 & 本地表情包库（`tools/meme/`）**：
-  - 自动下载 Chat 图片发送给当前多模态大模型理解（Gemini / GPT / Claude 等均支持）。
+- **多模态看图（含动态 GIF）& 本地表情包库（`tools/meme/`）**：
+  - 自动下载 Chat 图片与商城动态大表情（`mface`）发送给当前多模态大模型理解（Gemini / GPT / Claude / Antigravity CLI 均支持）；内置零依赖 GIF 解码与关键帧分镜拼图渲染器（`src/gif.js`），原图归档保留 `.gif` 不变，送入模型前自动将动态 GIF 提取为带序号的关键帧分镜 PNG，彻底解决各模型不认 GIF 或只看首帧的问题。
   - 支持机器人自主**偷图收藏（SHA-1 自动去重 + 魔数识别格式）**、按关键词检索并发送本地 `tools/meme/` 里的表情包；也支持人工直接拖图进文件夹即刻识别。
   - 支持配置角色三视图/参考图（`assets/`），按需调用 `get_self_image` 查看或 `send_self_image` 发图，未放图时自动跳过、不浪费 token。
 - **拟人化 Chat 聊天节奏 & 内置风控护栏（`src/safety.js`）**：
@@ -84,6 +84,7 @@ chat-soul-bridge/
 │   ├── bot-scaffold.js    # 自动生成 bots/<名称>/ 独立目录（含各自 start.bat / config.json / .env / state/）
 │   ├── config.js          # 统一配置加载、默认值合并与旧顶层字段向下兼容
 │   ├── llm.js             # 多模型统一协议适配层（Gemini / OpenAI 兼容 / Anthropic / Antigravity CLI）
+│   ├── gif.js             # 零依赖纯 JS GIF87a/89a 解码与关键帧分镜拼图 PNG 渲染器
 │   ├── image-gen.js       # 多协议 AI 画图引擎（Gemini 生图 / OpenAI 兼容 /images/generations）
 │   ├── context-db.js      # 本地短期对话滑窗数据库（state/context.db）
 │   ├── db.js              # Python SQLite + FTS5 写入与 recall.py 检索封装

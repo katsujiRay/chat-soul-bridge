@@ -18,6 +18,7 @@ import path from 'node:path';
 import { recallFromDb, saveChatMessageToDb, saveDiaryToDb } from './db.js';
 import { adjustAffection, adjustMood } from './emotion.js';
 import { resolveForwardMessage, sendForwardMessages } from './forward.js';
+import { detectImageMime } from './gif.js';
 import { generateImage } from './image-gen.js';
 import {
   clearUserImpression,
@@ -1520,7 +1521,9 @@ export function createToolExecutor({
             }
 
             const segs = Array.isArray(data.message) ? data.message : [];
-            const urls = segs.filter((s) => s?.type === 'image' && s.data?.url).map((s) => s.data.url);
+            const urls = segs
+              .filter((s) => (s?.type === 'image' || s?.type === 'mface') && s.data?.url)
+              .map((s) => s.data.url);
             if (urls.length === 0) {
               return { ok: false, error: '原消息中未找到图片链接（可能已过期或不含图片）' };
             }
@@ -1530,11 +1533,12 @@ export function createToolExecutor({
               try {
                 const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
                 if (!r.ok) continue;
-                const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
-                if (!ct.startsWith('image/')) continue;
+                const ct = (r.headers.get('content-type') || '').split(';')[0].trim();
                 const buf = Buffer.from(await r.arrayBuffer());
-                if (buf.length > 0 && buf.length <= 8 * 1024 * 1024) {
-                  downloaded.push({ data: buf.toString('base64'), mimeType: ct });
+                if (buf.length === 0 || buf.length > 8 * 1024 * 1024) continue;
+                const mimeType = detectImageMime(buf, ct);
+                if (mimeType) {
+                  downloaded.push({ data: buf.toString('base64'), mimeType });
                 }
               } catch {}
             }
