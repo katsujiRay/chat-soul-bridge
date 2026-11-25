@@ -579,12 +579,12 @@ async function expandForwardsInMessage(forwardIds = [], baseText = '', baseImage
   const maxImgLimit = Math.max(0, Number(config.forward?.maxExpandImages ?? 4));
   let expandedCount = 0;
 
-  for (const fid of (forwardIds || []).slice(0, 2)) {
+  for (const fid of (forwardIds || []).slice(0, 3)) {
     const resolved = await resolveForwardMessage(sendOneBot, fid, {
-      maxItems: Number(config.forward?.maxExpandItems ?? 25),
-      maxDepth: Number(config.forward?.maxExpandDepth ?? 2),
+      maxItems: Number(config.forward?.maxExpandItems ?? 60),
+      maxDepth: Number(config.forward?.maxExpandDepth ?? 5),
       maxImages: Math.max(0, maxImgLimit - mergedImages.length),
-      maxChars: 2600,
+      maxChars: Number(config.forward?.maxExpandChars ?? 5000),
       formatIdentity: (uid, rawName) => resolveSpeakerIdentity(uid, rawName, config, getPersona().name).label,
     });
     if (!resolved.ok || !resolved.summaryText) {
@@ -1436,7 +1436,8 @@ async function handleMessage(event) {
         if (quotedMessage && quotedMessage.text) {
           const extraImgNote = quotedMessage.imageUrls?.length > 0 && quotedMessage.text !== '[图片]' ? '（含图片）' : '';
           if (quotedMessage.isForward || quotedMessage.text.startsWith('[合并转发')) {
-            replyHint = ` [引用了 ${quotedMessage.sender} 的合并转发(id=${replyId})${extraImgNote}：\n${quotedMessage.text.slice(0, 1600)}\n]`;
+            const maxFwdChars = Math.max(1600, Number(config.forward?.maxExpandChars ?? 5000));
+            replyHint = ` [引用了 ${quotedMessage.sender} 的合并转发(id=${replyId})${extraImgNote}：\n${quotedMessage.text.slice(0, maxFwdChars)}\n]`;
           } else {
             const snippet = quotedMessage.text.replace(/\s+/g, ' ').slice(0, 220);
             replyHint = ` [引用了 ${quotedMessage.sender} 的消息(id=${replyId}): 「${snippet}」${extraImgNote}]`;

@@ -200,11 +200,12 @@
   },
 
   "forward": {
-    "_comment": "【14. 合并转发解析与发送（src/forward.js）】autoExpand=收到合并转发时是否自动调用 get_forward_msg 展开内容并入库(默认true); maxExpandItems=单条合并转发最多展开条数(默认25); maxExpandDepth=嵌套合并转发最大展开层数(默认2); maxExpandImages=自动拉取转发内附带图片上限(默认4张); maxSendNodes=机器人调用 chat_forward_messages 单次最多打包节点数(默认20)",
+    "_comment": "【14. 合并转发解析与发送（src/forward.js）】autoExpand=收到合并转发时是否自动调用 get_forward_msg 展开内容并入库(默认true); maxExpandItems=所有层级累计最多展开条数(默认60); maxExpandDepth=嵌套合并转发最大展开层数(默认5,同时兼容id递归与内联节点); maxExpandImages=自动拉取转发内附带图片上限(默认4张); maxExpandChars=展开文本字数上限(默认5000); maxSendNodes=机器人调用 chat_forward_messages 单次最多打包节点数(默认20)",
     "autoExpand": true,
-    "maxExpandItems": 25,
-    "maxExpandDepth": 2,
+    "maxExpandItems": 60,
+    "maxExpandDepth": 5,
     "maxExpandImages": 4,
+    "maxExpandChars": 5000,
     "maxSendNodes": 20
   },
 

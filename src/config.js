@@ -131,9 +131,10 @@ export const DEFAULT_CONFIG = {
   },
   forward: {
     autoExpand: true,
-    maxExpandItems: 25,
-    maxExpandDepth: 2,
+    maxExpandItems: 60,
+    maxExpandDepth: 5,
     maxExpandImages: 4,
+    maxExpandChars: 5000,
     maxSendNodes: 20,
   },
   tools: {

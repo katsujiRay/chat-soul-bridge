@@ -1055,9 +1055,10 @@ export function createToolExecutor({
           const id = String(args.forward_id || '').trim();
           if (!id) return { ok: false, error: '缺少 forward_id' };
           const resolved = await resolveForwardMessage(sendOneBot, id, {
-            maxItems: Number(forwardConfig?.maxExpandItems ?? 25),
-            maxDepth: Number(forwardConfig?.maxExpandDepth ?? 2),
-            maxImages: Math.min(2, Number(forwardConfig?.maxExpandImages ?? 2)),
+            maxItems: Number(forwardConfig?.maxExpandItems ?? 60),
+            maxDepth: Number(forwardConfig?.maxExpandDepth ?? 5),
+            maxImages: Math.min(3, Number(forwardConfig?.maxExpandImages ?? 4)),
+            maxChars: Number(forwardConfig?.maxExpandChars ?? 5000),
           });
           if (!resolved.ok) return resolved;
 
@@ -1065,20 +1066,21 @@ export function createToolExecutor({
             const parts = [
               {
                 type: 'text',
-                text: `合并转发内容（共 ${resolved.totalCount} 条，展示 ${resolved.shownCount} 条）：\n${resolved.lines.join('\n')}`,
+                text: `合并转发内容（外层 ${resolved.totalCount} 条，共展开 ${resolved.shownCount} 条）：\n${resolved.lines.join('\n')}`,
               },
             ];
-            for (const url of resolved.imageUrls.slice(0, 2)) {
+            for (const url of resolved.imageUrls.slice(0, 3)) {
               try {
                 const r = await fetch(url, {
                   headers: { 'User-Agent': 'Mozilla/5.0' },
                   signal: AbortSignal.timeout(10000),
                 });
                 if (!r.ok) continue;
-                const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+                const ct = (r.headers.get('content-type') || '').split(';')[0].trim();
                 const buf = Buffer.from(await r.arrayBuffer());
-                if (buf.length > 0 && buf.length <= 4 * 1024 * 1024) {
-                  parts.push({ type: 'image', data: buf.toString('base64'), mime_type: ct });
+                if (buf.length > 0 && buf.length <= 5 * 1024 * 1024) {
+                  const mimeType = detectImageMime(buf, ct) || 'image/jpeg';
+                  parts.push({ type: 'image', data: buf.toString('base64'), mime_type: mimeType });
                 }
               } catch {}
             }
