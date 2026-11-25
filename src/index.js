@@ -210,6 +210,7 @@ const executeTool = createToolExecutor({
   getBotName: () => getPersona().name,
   getReferencePath: () => getPersona().referencePath,
   onMessageSent: (res) => rememberMyMessageId(res),
+  sendReply: (ev, txt, opts) => sendReply(ev, txt, opts),
 });
 
 // 解析 config.json 中的 "${ENV_VAR}" 占位符，同时支持直接明文填写和 .env 环境变量回退
@@ -427,12 +428,13 @@ function splitBurstMessages(text, maxParts = 4, maxChars = 500) {
  *   逐条按真实 OneBot message_id 写入 state/memory.db 与内存 recentBuffers，
  *   确保与离线同步拉取的群/私聊历史 1 对 1 精准去重，且引用任意一条气泡都能秒命中缓存。
  */
-async function sendReply(event, text) {
+async function sendReply(event, text, { replyToMessageId = '' } = {}) {
   const maxBurst = Math.max(1, Math.min(8, Number(config.reply?.maxBurstParts ?? 4)));
   const maxChars = Math.max(0, Number(config.safety?.maxMessageChars ?? 500));
   const parts = splitBurstMessages(text, maxBurst, maxChars);
   if (parts.length === 0) return '';
 
+  const replyIdStr = String(replyToMessageId || '').trim();
   const chatKey =
     event.message_type === 'group' ? `group:${event.group_id}` : `private:${event.user_id}`;
   const botName = getPersona().name;
@@ -469,12 +471,20 @@ async function sendReply(event, text) {
       }
     }
 
+    const payloadMsg =
+      i === 0 && replyIdStr
+        ? [
+            { type: 'reply', data: { id: replyIdStr } },
+            { type: 'text', data: { text: parts[i] } },
+          ]
+        : parts[i];
+
     let res;
     try {
       if (event.message_type === 'private') {
-        res = await sendOneBot('send_private_msg', { user_id: event.user_id, message: parts[i] });
+        res = await sendOneBot('send_private_msg', { user_id: event.user_id, message: payloadMsg });
       } else if (event.message_type === 'group') {
-        res = await sendOneBot('send_group_msg', { group_id: event.group_id, message: parts[i] });
+        res = await sendOneBot('send_group_msg', { group_id: event.group_id, message: payloadMsg });
       }
     } catch (err) {
       const code = String(err?.code || '');
@@ -1850,6 +1860,12 @@ if (safetyGuard.config.enabled) {
       : `${sc.minGlobalSendGapMs}ms`;
   log(
     `风控护栏已启用: 单会话 ${fmtLimit(sc.maxSendPerMinute, '分')} ${fmtLimit(sc.maxSendPerHour, '时')} | 全局 ${fmtLimit(sc.globalMaxSendPerMinute, '分')} ${fmtLimit(sc.globalMaxSendPerHour, '时')} | 发包间距 ${gapDesc} | 唤醒限流 ${sc.wakeLimit?.enabled ? '开' : '关'} | 单条上限 ${sc.maxMessageChars}字`
+  );
+}
+if (config.reply?.typingDelay !== false) {
+  const r = config.reply || {};
+  log(
+    `回复节奏已启用: 首句随机 ${Number(r.firstReplyMinMs ?? 1000)}~${Number(r.firstReplyMaxMs ?? 3000)}ms | 后续气泡 ${Number(r.burstBaseMs ?? 1000)}ms+字数×${Number(r.burstPerCharMs ?? 150)}ms(+0~${Number(r.burstJitterMs ?? 400)}ms, 封顶${Number(r.burstMaxMs ?? 6000)}ms) | 最多拆分 ${Number(r.maxBurstParts ?? 4)} 条`
   );
 }
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);

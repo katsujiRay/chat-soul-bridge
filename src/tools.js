@@ -794,6 +794,7 @@ export function createToolExecutor({
   getBotName = () => 'Bot',
   getReferencePath = () => '',
   onMessageSent = null,
+  sendReply = null,
 }) {
   const trustedSet = new Set(trustedGroups.map(String));
   const privateMemSet = new Set(privateMemoryGroups.map(String));
@@ -927,6 +928,11 @@ export function createToolExecutor({
           const msgId = String(args.message_id || '').trim();
           const text = String(args.text || '').trim();
           if (!msgId || !text) return { ok: false, error: 'message_id 和 text 不能为空' };
+          if (typeof sendReply === 'function') {
+            await sendReply(event, text, { replyToMessageId: msgId });
+            markDirectSent?.(text);
+            return { ok: true, sent: text };
+          }
           const segments = [
             { type: 'reply', data: { id: msgId } },
             { type: 'text', data: { text } },
