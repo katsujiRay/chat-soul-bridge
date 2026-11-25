@@ -621,7 +621,8 @@ async function resolveQuotedMessage(chatKey, replyId) {
 
   const recent = getRecentMessages(chatKey, 30);
   const hit = recent.find((m) => String(m.message_id) === targetId);
-  if (hit && hit.text && hit.text !== '[图片]') {
+  const isIncompleteCache = !hit?.text || hit.text === '[图片]' || hit.text.includes('[合并转发');
+  if (hit && !isIncompleteCache) {
     return {
       sender: hit.sender || String(hit.user_id || '未知'),
       userId: String(hit.user_id || ''),
@@ -775,19 +776,25 @@ function checkGroupTrigger(
     nonOwnerStreak.set(gKey, 0);
   }
 
-  // 如果连续非主人（例如另一个 AI 机器人）触发达到上限，暂停响应避免两个 AI 无限互刷
-  if (!isOwner && currentStreak >= maxStreak) {
+  // 防双 AI 互刷：同群其他 AI 伙伴连续触发达上限后直接熔断
+  if (isKnownBot && currentStreak >= maxStreak) {
     return null;
   }
 
+  // 显式 @ 提及：人类群友随时可唤醒（并清零无主人连聊计数防外群误锁），已知 AI 伙伴计入连聊上限
   if (config.groupTrigger?.atMention !== false && isAtMe) {
-    if (!isOwner) nonOwnerStreak.set(gKey, currentStreak + 1);
+    nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
     return { reason: 'at', matchedTopics: [] };
   }
 
   if (config.groupTrigger?.replyToMe !== false && replyId && myMessageIds.has(String(replyId))) {
-    if (!isOwner) nonOwnerStreak.set(gKey, currentStreak + 1);
+    nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
     return { reason: 'reply', matchedTopics: [] };
+  }
+
+  // 非显式触发（关键词 / 话题 / 随机插话）：无主人参与时连续接话达上限则暂停
+  if (!isOwner && currentStreak >= maxStreak) {
+    return null;
   }
 
   const keywords = [...new Set([...(getPersona().keywords || []), ...(config.groupTrigger?.keywords || [])])];
@@ -1186,7 +1193,17 @@ async function handleMessage(event) {
   const parsedIncoming = parseMessage(event);
   let { text, imageUrls } = parsedIncoming;
   const { forwardIds, mentionedUserIds, replyId, isAtMe } = parsedIncoming;
-  if (!text && imageUrls.length === 0) return;
+  // 纯 @ 机器人或「引用消息/聊天记录 + @ 机器人」（无额外正文）必须放行，不能当空消息静默丢弃
+  if (!text && imageUrls.length === 0 && !isAtMe && !replyId && forwardIds.length === 0) return;
+
+  const fallbackRecordText =
+    imageUrls.length > 0
+      ? '[图片]'
+      : isAtMe && replyId
+        ? '[引用消息并@了你]'
+        : isAtMe
+          ? '[@了你]'
+          : '[引用消息]';
 
   // 触发判定使用原始发言文本（避免转发的旧聊天记录里出现角色名导致无关外群误触发）
   const rawTextForTrigger = text;
@@ -1238,7 +1255,7 @@ async function handleMessage(event) {
     time: formatNow().slice(11, 16),
     user_id: String(event.user_id),
     sender: speaker.label,
-    text: recentRecordText || '[图片]',
+    text: recentRecordText || fallbackRecordText,
   });
 
   let triggerReason = 'private';
@@ -1260,10 +1277,12 @@ async function handleMessage(event) {
     // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒
     if (!triggerReason && replyId && config.groupTrigger?.replyToMe !== false) {
       const selfId = String(event.self_id || config.snowluma.botId || '');
-      const isOwner = String(event.user_id) === String(config.ownerId || '');
+      const isKnownBot =
+        String(event.user_id) !== String(config.ownerId || '') &&
+        (speaker?.isAiBot === true || (speaker?.role === 'known' && /(ai|bot|机器人)/i.test(String(speaker.tag || ''))));
       const maxStreak = Number(config.groupTrigger?.maxConsecutiveWithoutOwner ?? 2);
       const streak = nonOwnerStreak.get(String(event.group_id)) || 0;
-      if (isOwner || streak < maxStreak) {
+      if (!isKnownBot || streak < maxStreak) {
         quotedMessage = await resolveQuotedMessage(chatKey, replyId);
         if (quotedMessage && selfId && quotedMessage.userId === selfId) {
           triggerReason = 'reply';
@@ -1282,7 +1301,7 @@ async function handleMessage(event) {
       isSelf: false,
       isOwner: String(event.user_id) === String(config.ownerId || ''),
       isTriggered: Boolean(triggerReason),
-      text: text || '[图片]',
+      text: text || fallbackRecordText,
       ts: event.time ? Number(event.time) : Date.now() / 1000,
     }).then((r) => {
       if (r && !r.ok && !r.skipped) log('写入记忆库失败(收):', r.error || r);
@@ -1426,14 +1445,22 @@ async function handleMessage(event) {
           replyHint = ` [引用了消息 id=${replyId}]`;
         }
       }
+      const fallbackPromptText =
+        imageUrls.length > 0
+          ? '（发了一张图片）'
+          : isAtMe && replyId
+            ? '（引用上述消息并 @ 了你，请你看看）'
+            : isAtMe
+              ? '（单独 @ 了你一下）'
+              : '（引用了上述消息）';
       const currentLine =
         event.message_type === 'group'
-          ? `[当前消息 msg_id=${event.message_id || ''}][${speaker.label}(${event.user_id})]${replyHint} ${text || '（发了一张图片）'}`
-          : `[当前消息 msg_id=${event.message_id || ''}][${speaker.label}]${replyHint} ${text || '（发了一张图片）'}`;
+          ? `[当前消息 msg_id=${event.message_id || ''}][${speaker.label}(${event.user_id})]${replyHint} ${text || fallbackPromptText}`
+          : `[当前消息 msg_id=${event.message_id || ''}][${speaker.label}]${replyHint} ${text || fallbackPromptText}`;
 
       const promptText = `${contextPrefix}\n${currentLine}`;
 
-      log(`收到 ${chatKey} (${senderName}, ${triggerReason}): ${text || '[图片]'}`);
+      log(`收到 ${chatKey} (${senderName}, ${triggerReason}): ${text || fallbackRecordText}`);
 
       // 下载当前消息里的图片；若引用了含图消息且未超 3 张上限，一并下载供模型查看
       const images = [];
