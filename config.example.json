@@ -173,12 +173,22 @@
   },
 
   "emotion": {
-    "_comment": "【12. 好感度与心情双向联动引擎（state/emotion.json，仅对管理员私聊生效）】enabled=总开关; moodHalfLifeHours=即时心情自然回归平静的半衰期小时数(默认4小时); affectionCooldownMinutes=主动调整好感度的最小冷却分钟(默认60分钟); milestoneCooldownHours=里程碑涨幅(+3及以上)冷却小时(默认24小时); dailyNormalGainCap=每日普通主动好感涨幅上限(默认+2)",
+    "_comment": "【12. 好感度与心情双向联动引擎（state/emotion.json）】好感(0~100,仅管理员私聊): initialAffection=新建初始分(50); affectionFloor=闲置衰减保底(25); passiveStep/passiveDailyCap=每条被动+0.05/日封顶+0.5(10条); dailyNormalGainCap=每日普通总上限+2(含被动与哄好奖励); decayAfterHours/decayPerDay=24h无互动后每天惰性-1; affectionCooldownMinutes=主动调整冷却(60分); milestoneCooldownHours=里程碑(+3~+5)冷却(168小时=7天); 心情(-100~+100,全局同步): moodDecayAfterMinutes=前30分钟不淡; moodDecayPerHour=每小时线性回归8点; moodCooldownMinutes=5分钟冷却; moodMaxAdjustPerCall=单次上限±40; moodBaselineFactor=好感基线偏移系数0.2",
     "enabled": true,
-    "moodHalfLifeHours": 4,
+    "initialAffection": 50,
+    "affectionFloor": 25,
+    "passiveStep": 0.05,
+    "passiveDailyCap": 0.5,
+    "dailyNormalGainCap": 2,
+    "decayAfterHours": 24,
+    "decayPerDay": 1,
     "affectionCooldownMinutes": 60,
-    "milestoneCooldownHours": 24,
-    "dailyNormalGainCap": 2
+    "milestoneCooldownHours": 168,
+    "moodDecayAfterMinutes": 30,
+    "moodDecayPerHour": 8,
+    "moodCooldownMinutes": 5,
+    "moodMaxAdjustPerCall": 40,
+    "moodBaselineFactor": 0.2
   },
 
   "todos": {

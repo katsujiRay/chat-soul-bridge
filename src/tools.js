@@ -527,13 +527,13 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     {
       type: 'function',
       name: 'chat_affection_adjust',
-      description: '调整你对主人（管理员本人）的长期好感度（仅在主人私聊中有效）。日常闲聊已自动算过被动分，不用每次都调；只有走心对话(+1)、难忘的事(+2)、真正里程碑(+3~+5)或被敷衍/越界/失望(-2~-8)时才调。绝不要直接向对方报分数。',
+      description: '调整对主人的长期好感度（仅主人私聊，1h冷却，勿报分数）：走心+1/难忘+2/里程碑+3~+5(每周一次)/冷落-2/越界-5/失望-8。',
       parameters: {
         type: 'object',
         properties: {
           delta: {
             type: 'number',
-            description: '变化幅度：正数 +1 ~ +5，负数 -1 ~ -8。',
+            description: '变化幅度：走心 +1、难忘 +2、里程碑 +3~+5（每周限一次）；冷落 -2、越界 -5、严重失望 -8（范围 -10~+10）。',
           },
           reason: {
             type: 'string',
@@ -546,13 +546,13 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
     {
       type: 'function',
       name: 'chat_mood_adjust',
-      description: '调整你当下的即时心情（会随时间淡回平静，并与好感度联动）。被凶/冷落/共情对方难过时传负数(-5~-25)，开心/心里一暖/被哄好时传正数(+5~+25)。没真实情绪变化不要硬调。',
+      description: '调整当下即时心情（-100~+100，5分钟冷却，会随时间回归并与好感联动）：开心/被哄好传 +10~+40，委屈/低落/生气传 -10~-40，有真实情绪波动就调。',
       parameters: {
         type: 'object',
         properties: {
           delta: {
             type: 'number',
-            description: '心情变化幅度：正数 +5 ~ +25，负数 -5 ~ -25。',
+            description: '心情变化幅度：正数 +5 ~ +40，负数 -5 ~ -40。',
           },
           reason: {
             type: 'string',

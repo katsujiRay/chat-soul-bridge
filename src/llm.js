@@ -892,7 +892,7 @@ function createAgyCliClient({
       const paramStr = Object.keys(props)
         .map((k) => `${k}${req.has(k) ? '' : '?'}`)
         .join(', ');
-      const desc = String(t.description || '').replace(/\s+/g, ' ').slice(0, 95);
+      const desc = String(t.description || '').replace(/\s+/g, ' ').slice(0, 130);
       return `- ${t.name}(${paramStr}): ${desc}`;
     });
     return (

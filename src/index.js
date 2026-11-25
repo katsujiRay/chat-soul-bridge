@@ -22,6 +22,7 @@ import {
   configureEmotion,
   ensureEmotionFile,
   formatEmotionForPrompt,
+  formatMoodForPrompt,
   getEmotionSnapshot,
   recordDailyPassiveInteraction,
 } from './emotion.js';
@@ -1331,7 +1332,11 @@ async function handleMessage(event) {
         event.message_type === 'group' && trustedGroupSet.has(String(event.group_id));
       if (isOwnerPrivate && config.emotion?.enabled !== false) {
         recordDailyPassiveInteraction();
-        contextPrefix += `\n${formatEmotionForPrompt()}`;
+        const emoBlock = formatEmotionForPrompt();
+        if (emoBlock) contextPrefix += `\n${emoBlock}`;
+      } else if (isTrustedGroup && config.emotion?.enabled !== false) {
+        const moodBlock = formatMoodForPrompt({ inGroup: true });
+        if (moodBlock) contextPrefix += `\n${moodBlock}`;
       }
       if ((isOwnerPrivate || isTrustedGroup) && config.todos?.enabled !== false) {
         const todoLine = formatTodosForPrompt(Math.max(1, Number(config.todos?.injectMaxItems ?? 5)));

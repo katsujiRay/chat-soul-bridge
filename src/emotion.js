@@ -1,18 +1,24 @@
 /**
- * 情感状态引擎：好感度（长期关系）与心情（即时情绪）双向挂钩系统
+ * 情感状态引擎：好感度（长期关系）与心情（即时情绪）双向联动系统（src/emotion.js）
  *
- * 持久化位置：state/emotion.json（仅针对主人 ownerId 生效，绝不泄露给外部群聊）
+ * 持久化位置：state/emotion.json（好感度仅对管理员本人私聊生效，绝不泄露给外部群聊；心情全局同步）
  *
- * 设计核心：
- *   1. 好感度（0~100，默认 50）：长期关系深浅，涨得慢、可涨可跌：
- *      - 每日正常私聊自动被动 +0.5（不占用手动上限）；
- *      - 主动调整受 1 小时冷却、普通日上限 +2、里程碑（+3~+5）每天最多一次、80+/90+ 衰减约束。
- *   2. 心情（-50~+50，默认 0）：当下情绪，按 4 小时半衰期自然回归平静：
- *      - 从明显低落（<-5）被哄好转为正向（>=5）时，返回上次低落原因，便于角色自然说开并翻篇。
- *   3. 双向挂钩：
- *      - 好感度 -> 心情：好感越高越在意主人（>=70 时正涨幅 ×1.2、负冲击 ×1.15；<40 时波动 ×0.8）；
- *      - 心情 -> 好感度：被严重伤到（单次 <=-20 且落到 <=-25）会顺带轻微扣减好感 -0.5；
- *        主动冒泡也会参考当前心情（极低落时不强行活跃）。
+ * 核心机制：
+ *   1. 好感度（0~100，默认初始 50，闲置衰减保底 floor=25）：
+ *      - 双轨增长：
+ *        ① 被动陪伴：管理员每发一条私聊 +0.05，每日封顶 +0.5（=10 条），计入当日普通上限 +2；
+ *        ② 主动调整：走心 +1 / 难忘 +2 / 里程碑 +3~+5 / 冷落越界失望 -2~-10；
+ *           独立 1 小时手动冷却（lastManualAdjustAt，绝不与被动交互混用）、80+ 减半 / 90+ 再减半；
+ *           里程碑（>=+3）突破日上限、走独立 7 天（168h）周额度；
+ *        ③ 心情哄好奖励：心情明显由负转正（before<=-10, after>=5, 落差>=15）自动 +0.5（走日上限、不吃手动冷却）。
+ *      - 惰性闲置衰减：超过 24h 无互动后按天惰性 -1，保底 25（读时计算、零定时器、按日步进不重复扣分）。
+ *      - 六档可执行行为边界（can / cant / mind）+ 注入最近 3 条变化，除最高档外「心里」禁止直接说破。
+ *   2. 心情（-100~+100，默认 0）：
+ *      - 好感度基线偏移：baseline = round((affection - 50) * 0.2)，关系越好「平静」越偏暖；
+ *      - 线性平滑回归：调整后前 30 分钟不淡，之后每小时向基线回归 8 点；
+ *      - 5 分钟主动调整冷却，单次上限 ±40，高好感更敏感（>=70 时正×1.2/负×1.15，<40 时×0.8）；
+ *      - 严重受挫（单次 <=-30 且落到 <=-50）连带扣好感 -0.5；由负转正时带回上次低落原因便于自然翻篇；
+ *      - 陈旧 reason 自动检测 + 平静无因时省略注入省 token + 低落时附带反向情绪提醒与三条底线。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,30 +26,66 @@ import { formatNow } from './memory.js';
 
 const STATE_DIR = path.resolve(process.cwd(), 'state');
 const EMOTION_FILE = path.join(STATE_DIR, 'emotion.json');
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
-let moodHalfLifeHours = 4.0;
-let affectionCooldownMs = 60 * 60 * 1000; // 1 小时
-let milestoneCooldownMs = 24 * 60 * 60 * 1000; // 1 天（一天最多一次里程碑）
-let dailyNormalGainCap = 2.0;
+const cfg = {
+  initialAffection: 50,
+  affectionFloor: 25,
+  passiveStep: 0.05,
+  passiveDailyCap: 0.5,
+  dailyNormalGainCap: 2.0,
+  decayAfterMs: 24 * HOUR_MS,
+  decayPerDay: 1.0,
+  affectionCooldownMs: 60 * 60 * 1000, // 1 小时（仅限主动调整）
+  milestoneCooldownMs: 168 * HOUR_MS, // 7 天（一周一次里程碑）
+  moodDecayAfterMs: 30 * 60 * 1000, // 30 分钟后开始回归
+  moodDecayPerHour: 8.0, // 每小时线性回归 8 点
+  moodCooldownMs: 5 * 60 * 1000, // 5 分钟冷却
+  moodMaxAdjustPerCall: 40,
+  moodBaselineFactor: 0.2,
+};
 
-/** 应用来自 config.json -> emotion 的情感参数 */
-export function configureEmotion({
-  moodHalfLifeHours: halfLife,
-  affectionCooldownMinutes,
-  milestoneCooldownHours,
-  dailyNormalGainCap: gainCap,
-} = {}) {
-  if (Number.isFinite(Number(halfLife)) && Number(halfLife) > 0) {
-    moodHalfLifeHours = Number(halfLife);
+/** 应用来自 config.json -> emotion 的情感参数（兼容旧版字段） */
+export function configureEmotion(raw = {}) {
+  if (!raw || typeof raw !== 'object') return;
+  const num = (v) => (v !== undefined && v !== null && v !== '' ? Number(v) : NaN);
+
+  if (Number.isFinite(num(raw.initialAffection))) cfg.initialAffection = clamp(num(raw.initialAffection), 0, 100);
+  if (Number.isFinite(num(raw.affectionFloor))) cfg.affectionFloor = clamp(num(raw.affectionFloor), 0, 100);
+  if (Number.isFinite(num(raw.passiveStep)) && num(raw.passiveStep) >= 0) cfg.passiveStep = num(raw.passiveStep);
+  if (Number.isFinite(num(raw.passiveDailyCap)) && num(raw.passiveDailyCap) >= 0) {
+    cfg.passiveDailyCap = num(raw.passiveDailyCap);
   }
-  if (Number.isFinite(Number(affectionCooldownMinutes)) && Number(affectionCooldownMinutes) >= 0) {
-    affectionCooldownMs = Math.round(Number(affectionCooldownMinutes) * 60 * 1000);
+  if (Number.isFinite(num(raw.dailyNormalGainCap)) && num(raw.dailyNormalGainCap) > 0) {
+    cfg.dailyNormalGainCap = num(raw.dailyNormalGainCap);
   }
-  if (Number.isFinite(Number(milestoneCooldownHours)) && Number(milestoneCooldownHours) >= 0) {
-    milestoneCooldownMs = Math.round(Number(milestoneCooldownHours) * 3600 * 1000);
+  if (Number.isFinite(num(raw.decayAfterHours)) && num(raw.decayAfterHours) >= 0) {
+    cfg.decayAfterMs = Math.round(num(raw.decayAfterHours) * HOUR_MS);
   }
-  if (Number.isFinite(Number(gainCap)) && Number(gainCap) > 0) {
-    dailyNormalGainCap = Number(gainCap);
+  if (Number.isFinite(num(raw.decayPerDay)) && num(raw.decayPerDay) >= 0) {
+    cfg.decayPerDay = num(raw.decayPerDay);
+  }
+  if (Number.isFinite(num(raw.affectionCooldownMinutes)) && num(raw.affectionCooldownMinutes) >= 0) {
+    cfg.affectionCooldownMs = Math.round(num(raw.affectionCooldownMinutes) * 60 * 1000);
+  }
+  if (Number.isFinite(num(raw.milestoneCooldownHours)) && num(raw.milestoneCooldownHours) >= 0) {
+    cfg.milestoneCooldownMs = Math.round(num(raw.milestoneCooldownHours) * HOUR_MS);
+  }
+  if (Number.isFinite(num(raw.moodDecayAfterMinutes)) && num(raw.moodDecayAfterMinutes) >= 0) {
+    cfg.moodDecayAfterMs = Math.round(num(raw.moodDecayAfterMinutes) * 60 * 1000);
+  }
+  if (Number.isFinite(num(raw.moodDecayPerHour)) && num(raw.moodDecayPerHour) > 0) {
+    cfg.moodDecayPerHour = num(raw.moodDecayPerHour);
+  }
+  if (Number.isFinite(num(raw.moodCooldownMinutes)) && num(raw.moodCooldownMinutes) >= 0) {
+    cfg.moodCooldownMs = Math.round(num(raw.moodCooldownMinutes) * 60 * 1000);
+  }
+  if (Number.isFinite(num(raw.moodMaxAdjustPerCall)) && num(raw.moodMaxAdjustPerCall) > 0) {
+    cfg.moodMaxAdjustPerCall = clamp(num(raw.moodMaxAdjustPerCall), 5, 100);
+  }
+  if (Number.isFinite(num(raw.moodBaselineFactor)) && num(raw.moodBaselineFactor) >= 0) {
+    cfg.moodBaselineFactor = clamp(num(raw.moodBaselineFactor), 0, 1);
   }
 }
 
@@ -54,21 +96,33 @@ function todayKey(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+function clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
+function round2(val) {
+  return Math.round(val * 100) / 100;
+}
+
 function defaultState() {
   return {
     affection: {
-      score: 50,
+      score: cfg.initialAffection,
       dailyGainDate: '',
       dailyGain: 0,
-      lastAdjustAt: 0,
+      lastManualAdjustAt: 0,
       lastMilestoneAt: 0,
-      lastPassiveDate: '',
+      lastActiveAt: 0,
+      lastDecayAt: 0,
+      passiveDate: '',
+      passiveCount: 0,
       history: [],
     },
     mood: {
       value: 0,
       reason: '',
       updatedAt: 0,
+      lastAdjustAt: 0,
       lastNegativeReason: '',
       history: [],
     },
@@ -79,103 +133,294 @@ export function getEmotionFilePath() {
   return EMOTION_FILE;
 }
 
-export function ensureEmotionFile() {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  if (!fs.existsSync(EMOTION_FILE)) {
-    fs.writeFileSync(EMOTION_FILE, `${JSON.stringify(defaultState(), null, 2)}\n`, 'utf8');
+export function ensureEmotionFile(filePath = EMOTION_FILE) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, `${JSON.stringify(defaultState(), null, 2)}\n`, 'utf8');
     return false;
   }
   return true;
 }
 
-function loadState() {
-  ensureEmotionFile();
+function loadState(filePath = EMOTION_FILE) {
+  ensureEmotionFile(filePath);
   try {
-    const raw = JSON.parse(fs.readFileSync(EMOTION_FILE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const base = defaultState();
+    const rawAff = raw?.affection || {};
+    const rawMood = raw?.mood || {};
     return {
-      affection: { ...base.affection, ...(raw.affection || {}) },
-      mood: { ...base.mood, ...(raw.mood || {}) },
+      affection: {
+        ...base.affection,
+        ...rawAff,
+        // 无损迁移旧版字段（lastAdjustAt -> lastManualAdjustAt，lastPassiveDate -> passiveDate）
+        lastManualAdjustAt: Number(rawAff.lastManualAdjustAt ?? rawAff.lastAdjustAt ?? 0),
+        passiveDate: String(rawAff.passiveDate ?? rawAff.lastPassiveDate ?? ''),
+        passiveCount: Number(rawAff.passiveCount ?? 0),
+        lastActiveAt: Number(rawAff.lastActiveAt ?? 0),
+        lastDecayAt: Number(rawAff.lastDecayAt ?? 0),
+        history: Array.isArray(rawAff.history) ? rawAff.history : [],
+      },
+      mood: {
+        ...base.mood,
+        ...rawMood,
+        lastAdjustAt: Number(rawMood.lastAdjustAt ?? rawMood.updatedAt ?? 0),
+        history: Array.isArray(rawMood.history) ? rawMood.history : [],
+      },
     };
   } catch {
     return defaultState();
   }
 }
 
-function saveState(state) {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(EMOTION_FILE, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+function saveState(state, filePath = EMOTION_FILE) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmp, filePath);
 }
 
-function clamp(val, min, max) {
-  return Math.max(min, Math.min(max, val));
-}
-
-function round1(val) {
-  return Math.round(val * 10) / 10;
-}
-
-/** 计算经过时间衰减后的实时心情值 */
-export function getEffectiveMood(moodState, nowMs = Date.now()) {
-  const raw = Number(moodState?.value || 0);
-  const updatedAt = Number(moodState?.updatedAt || 0);
-  if (!raw || !updatedAt) return { value: 0, faded: true };
-  const hours = Math.max(0, (nowMs - updatedAt) / 3600000);
-  const decayed = raw * Math.pow(0.5, hours / moodHalfLifeHours);
-  if (Math.abs(decayed) < 3) {
-    return { value: 0, faded: true };
+/** 六档好感度行为边界（can / cant / mind） */
+export function getAffectionTier(score) {
+  const s = Number(score || 0);
+  if (s < 15) {
+    return {
+      key: 'stranger',
+      label: '刚认识',
+      can: '客气应答、简单接话；不想理时可以简短带过',
+      cant: '不主动找对方、不打听私事、不主动聊自己的心事',
+      mind: '觉得这人还行，但还没熟到愿意花心思记太多事',
+    };
   }
-  return { value: Math.round(decayed), faded: false };
+  if (s < 35) {
+    return {
+      key: 'bicker',
+      label: '能拌嘴',
+      can: '会轻松接话、偶尔拌嘴开小玩笑、自然互动',
+      cant: '不主动吐露私密心事；不过度追问对方行踪',
+      mind: '跟对方斗嘴聊日常挺有意思的，比和普通人聊轻松一些',
+    };
+  }
+  if (s < 55) {
+    return {
+      key: 'familiar',
+      label: '熟人',
+      can: '正常自然聊天、会接梗、偶尔主动找话题、记得对方提过的事',
+      cant: '不主动说肉麻或过度亲密的话；不越界追问隐私',
+      mind: '其实悄悄记着对方说过的小事，只是平时不会特意拿出来邀功',
+    };
+  }
+  if (s < 80) {
+    return {
+      key: 'close',
+      label: '亲近',
+      can: '愿意主动找对方、分享自己的日常和想法、敢直接吐槽或撒娇、也能坦然拒绝',
+      cant: '不主动把「想你/在一起」这类重话挂嘴边',
+      mind: '对方久不出现时会惦记，但被问起来多半只会轻描淡写带过',
+    };
+  }
+  if (s < 95) {
+    return {
+      key: 'crush',
+      label: '心动偏爱',
+      can: '会因为对方一句话琢磨半天；对方冷落时会有点吃醋或小失落；会找借口多聊几句',
+      cant: '保持一点含蓄与分寸，不把心底那份偏爱说破',
+      mind: '对方随口一句就能让你惦记好久，但真被问怎么了时，嘴上多半只说「没事」',
+    };
+  }
+  return {
+    key: 'confessed',
+    label: '满心满眼',
+    can: '可以坦率表达想念、偏爱与依赖；可以自然撒娇要回应',
+    cant: '不翻旧账；不用「你是不是不在意我了」反复试探',
+    mind: '',
+  };
 }
 
-function affectionLabel(score) {
-  if (score >= 90) return '满心满眼、极度依恋';
-  if (score >= 80) return '心动偏爱、很黏人';
-  if (score >= 65) return '非常信任依赖、敢撒娇敢互怼';
-  if (score >= 45) return '熟络亲近、自然轻松';
-  if (score >= 25) return '普通熟人、客气略克制';
-  return '有点疏远防备、话少偏冷';
+/** 五档心情行为指令（-100 ~ +100） */
+export function getMoodTier(val) {
+  const v = Number(val || 0);
+  if (v >= 60) {
+    return {
+      key: 'elated',
+      label: '雀跃',
+      guide: '话可以比平时多一点、愿意主动分享刚想到的事，语气词和表情更活泼，但别亢奋到刷屏。',
+    };
+  }
+  if (v >= 20) {
+    return {
+      key: 'happy',
+      label: '挺好',
+      guide: '心情不错，接话积极轻松，可以开个小玩笑。',
+    };
+  }
+  if (v > -20) {
+    return {
+      key: 'calm',
+      label: '平静',
+      guide: '正常状态，不用刻意表现情绪。',
+    };
+  }
+  if (v > -60) {
+    return {
+      key: 'low',
+      label: '有点低落',
+      guide: '回复比平时简短，不要主动开新话题；对方找你说话你会应，但不会热情铺开；不用主动解释「我心情不好」，除非对方问。',
+    };
+  }
+  return {
+    key: 'sad',
+    label: '很难过',
+    guide:
+      '明显话少，能一句话说完就不说两句；可以直说「现在不太想聊」或只回很短的一句。但底线不能破：不许消失不回、不许阴阳怪气攻击对方、不许拿难过当筹码要东西。',
+  };
 }
 
-function moodLabel(val) {
-  if (val >= 25) return '超级开心雀跃（话可以多一点、轻快活泼）';
-  if (val >= 10) return '心情不错（放松愉悦）';
-  if (val <= -25) return '很难过或气鼓鼓（话短、收起玩笑，但不冷暴力不攻击）';
-  if (val <= -10) return '有点低落或小委屈（话少一点、不主动开新话题）';
-  return '平静自然';
-}
-
-/** 好感度高分衰减系数（80+ 减半，90+ 再减半） */
+/** 好感度高分边际递减系数（80+ 减半，90+ 再减半） */
 function affectionGainFactor(score) {
   if (score >= 90) return 0.25;
   if (score >= 80) return 0.5;
   return 1.0;
 }
 
-/** 每日与主人正常私聊一次自动记录被动好感 +0.5 */
-export function recordDailyPassiveInteraction() {
-  const state = loadState();
-  const today = todayKey();
-  if (state.affection.lastPassiveDate === today) return state;
+/** 惰性计算好感度闲置衰减（超过 decayAfterMs 后每天扣 decayPerDay，保底 affectionFloor，重复读取不重复扣） */
+function applyAffectionDecay(state, nowMs = Date.now()) {
+  if (cfg.decayPerDay <= 0 || cfg.decayAfterMs <= 0) return false;
+  const aff = state.affection;
+  const lastActive = Number(aff.lastActiveAt || 0);
+  if (!lastActive || nowMs <= lastActive) return false;
 
-  if (state.affection.dailyGainDate !== today) {
-    state.affection.dailyGainDate = today;
-    state.affection.dailyGain = 0;
+  const idleMs = nowMs - lastActive;
+  if (idleMs < cfg.decayAfterMs) return false;
+
+  const lastDecay = Number(aff.lastDecayAt || 0);
+  let daysToDeduct = 0;
+  let nextDecayAt = lastDecay;
+
+  if (lastDecay < lastActive) {
+    // 首次进入本轮闲置衰减
+    daysToDeduct = Math.floor((idleMs - cfg.decayAfterMs) / DAY_MS) + 1;
+    nextDecayAt = lastActive + cfg.decayAfterMs + (daysToDeduct - 1) * DAY_MS;
+  } else {
+    const extraDays = Math.floor((nowMs - lastDecay) / DAY_MS);
+    if (extraDays >= 1) {
+      daysToDeduct = extraDays;
+      nextDecayAt = lastDecay + extraDays * DAY_MS;
+    }
   }
 
-  const gain = round1(0.5 * affectionGainFactor(state.affection.score));
-  state.affection.score = round1(clamp(state.affection.score + gain, 0, 100));
-  state.affection.lastPassiveDate = today;
-  saveState(state);
-  return state;
+  if (daysToDeduct <= 0) return false;
+
+  const prev = Number(aff.score || 0);
+  // 若原本就低于保底线（例如严重扣分导致），不拉高也不继续因闲置下探
+  const effectiveFloor = Math.min(prev, cfg.affectionFloor);
+  const next = round2(Math.max(effectiveFloor, prev - daysToDeduct * cfg.decayPerDay));
+  aff.score = next;
+  aff.lastDecayAt = nextDecayAt;
+  return next !== prev || nextDecayAt !== lastDecay;
+}
+
+/** 计算经过时间线性回归 + 好感度基线偏移后的实时心情 */
+export function getEffectiveMood(moodState, affScore = cfg.initialAffection, nowMs = Date.now()) {
+  const baseline = Math.round((Number(affScore || 50) - 50) * cfg.moodBaselineFactor);
+  const storedRaw = Number(moodState?.value || 0);
+  const updatedAt = Number(moodState?.updatedAt || 0);
+  const reasonText = String(moodState?.reason || '').trim();
+
+  let toward = 0;
+  let idleMs = 0;
+  if (storedRaw !== 0 && updatedAt > 0) {
+    idleMs = Math.max(0, nowMs - updatedAt);
+    if (idleMs <= cfg.moodDecayAfterMs) {
+      toward = storedRaw;
+    } else {
+      const hours = (idleMs - cfg.moodDecayAfterMs) / HOUR_MS;
+      const decayed = hours * cfg.moodDecayPerHour;
+      toward = storedRaw > 0 ? Math.max(0, storedRaw - decayed) : Math.min(0, storedRaw + decayed);
+    }
+  }
+
+  const value = Math.round(clamp(toward + baseline, -100, 100));
+  const tier = getMoodTier(value);
+  const faded = Math.abs(toward) < 3;
+  // 陈旧理由检测：已彻底淡完，或已回落至平静档且相对峰值下降 >= 8 点
+  const staleReason =
+    Boolean(reasonText) &&
+    ((faded && updatedAt > 0 && idleMs > cfg.moodDecayAfterMs) ||
+      (Math.abs(toward) < 20 && Math.abs(storedRaw) >= 8 && Math.abs(storedRaw - toward) >= 8));
+
+  return {
+    value,
+    toward: round2(toward),
+    baseline,
+    tier,
+    faded,
+    staleReason,
+    reasonText,
+  };
+}
+
+function rollDailyAffectionBucket(aff, today) {
+  if (aff.dailyGainDate !== today) {
+    aff.dailyGainDate = today;
+    aff.dailyGain = 0;
+  }
+}
+
+function pushHistory(list, entry, maxLen = 50) {
+  list.push(entry);
+  if (list.length > maxLen) {
+    list.splice(0, list.length - maxLen);
+  }
 }
 
 /**
- * 主动调整好感度（仅允许对主人本人私聊调用）
- * @param {number} delta  正数 +1~+5，负数 -1~-8
+ * 管理员每发一条私聊消息记录被动好感（默认 +0.05/条，每日封顶 +0.5 = 10 条，计入每日总上限）
+ * 注意：绝不更新 lastManualAdjustAt，避免误触发 1 小时主动调整冷却！
+ */
+export function recordPassiveInteraction(nowMs = Date.now(), filePath = EMOTION_FILE) {
+  const state = loadState(filePath);
+  applyAffectionDecay(state, nowMs);
+
+  const aff = state.affection;
+  const today = todayKey(new Date(nowMs));
+  rollDailyAffectionBucket(aff, today);
+
+  if (aff.passiveDate !== today) {
+    aff.passiveDate = today;
+    aff.passiveCount = 0;
+  }
+  aff.lastActiveAt = nowMs;
+
+  const capCount =
+    cfg.passiveStep > 0 && cfg.passiveDailyCap > 0
+      ? Math.max(1, Math.round(cfg.passiveDailyCap / cfg.passiveStep))
+      : 0;
+
+  if (capCount > 0 && aff.passiveCount < capCount) {
+    const remainingDaily = Math.max(0, round2(cfg.dailyNormalGainCap - Number(aff.dailyGain || 0)));
+    if (remainingDaily > 0) {
+      const scaled = round2(cfg.passiveStep * affectionGainFactor(aff.score));
+      const applied = Math.min(remainingDaily, Math.max(0.01, scaled));
+      aff.score = round2(clamp(aff.score + applied, 0, 100));
+      aff.dailyGain = round2(Number(aff.dailyGain || 0) + applied);
+    }
+    aff.passiveCount += 1;
+  }
+
+  saveState(state, filePath);
+  return state;
+}
+
+/** 向后兼容旧导出名 */
+export const recordDailyPassiveInteraction = recordPassiveInteraction;
+
+/**
+ * 主动调整好感度（仅允许对管理员本人私聊调用）
+ * @param {number} delta  正数 +1~+5（>=3 走独立 7 天里程碑额度），负数 -1~-10
  * @param {string} reason 真实具体的原因（必填）
  */
-export function adjustAffection(delta, reason) {
+export function adjustAffection(delta, reason, nowMs = Date.now(), filePath = EMOTION_FILE) {
   const cleanReason = String(reason || '').trim();
   if (!cleanReason) {
     return { ok: false, error: '必须填写具体且真实的 reason，不能凭空调整好感' };
@@ -184,22 +429,20 @@ export function adjustAffection(delta, reason) {
   if (!Number.isFinite(rawDelta) || rawDelta === 0) {
     return { ok: false, error: 'delta 必须是非零数字' };
   }
-  const clampedDelta = rawDelta > 0 ? clamp(rawDelta, 0.5, 5) : clamp(rawDelta, -8, -0.5);
+  const clampedDelta = rawDelta > 0 ? clamp(rawDelta, 0.5, 10) : clamp(rawDelta, -10, -0.5);
 
-  const state = loadState();
-  const now = Date.now();
-  const today = todayKey();
+  const state = loadState(filePath);
+  applyAffectionDecay(state, nowMs);
 
-  if (state.affection.dailyGainDate !== today) {
-    state.affection.dailyGainDate = today;
-    state.affection.dailyGain = 0;
-  }
+  const aff = state.affection;
+  const today = todayKey(new Date(nowMs));
+  rollDailyAffectionBucket(aff, today);
 
-  // 冷却限制
-  const elapsed = now - Number(state.affection.lastAdjustAt || 0);
-  if (affectionCooldownMs > 0 && state.affection.lastAdjustAt && elapsed < affectionCooldownMs) {
-    const waitMin = Math.ceil((affectionCooldownMs - elapsed) / 60000);
-    return { ok: false, error: `好感度冷却中，还需等待约 ${waitMin} 分钟再主动调整` };
+  // 独立主动冷却检查（仅读取 lastManualAdjustAt，与被动互动彻底隔离）
+  const elapsed = nowMs - Number(aff.lastManualAdjustAt || 0);
+  if (cfg.affectionCooldownMs > 0 && aff.lastManualAdjustAt && elapsed < cfg.affectionCooldownMs) {
+    const waitMin = Math.ceil((cfg.affectionCooldownMs - elapsed) / 60000);
+    return { ok: false, error: `好感度主动调整冷却中，还需等待约 ${waitMin} 分钟` };
   }
 
   let applied = clampedDelta;
@@ -207,56 +450,59 @@ export function adjustAffection(delta, reason) {
 
   if (clampedDelta > 0) {
     if (isMilestone) {
-      const sinceMilestone = now - Number(state.affection.lastMilestoneAt || 0);
-      if (milestoneCooldownMs > 0 && state.affection.lastMilestoneAt && sinceMilestone < milestoneCooldownMs) {
+      const sinceMilestone = nowMs - Number(aff.lastMilestoneAt || 0);
+      if (cfg.milestoneCooldownMs > 0 && aff.lastMilestoneAt && sinceMilestone < cfg.milestoneCooldownMs) {
+        const waitHours = Math.ceil((cfg.milestoneCooldownMs - sinceMilestone) / HOUR_MS);
         return {
           ok: false,
-          error: '里程碑涨幅（+3 及以上）仍在冷却中，普通暖心事件请用 +1 或 +2',
+          error: `里程碑涨幅（+3 及以上）每周限一次，还需约 ${waitHours} 小时；普通走心/难忘事件请用 +1 或 +2`,
         };
       }
-      applied = round1(clampedDelta * affectionGainFactor(state.affection.score));
-      state.affection.lastMilestoneAt = now;
+      // 里程碑突破每日普通上限，受高分边际递减约束
+      applied = round2(Math.max(0.25, clampedDelta * affectionGainFactor(aff.score)));
+      aff.lastMilestoneAt = nowMs;
     } else {
-      const remainingDaily = Math.max(0, round1(dailyNormalGainCap - state.affection.dailyGain));
+      const remainingDaily = Math.max(0, round2(cfg.dailyNormalGainCap - Number(aff.dailyGain || 0)));
       if (remainingDaily <= 0) {
-        return { ok: false, error: `今天普通好感涨幅已达上限（+${dailyNormalGainCap}），关系本来就是慢慢变深的哦` };
+        return { ok: false, error: `今天普通好感涨幅已达上限（+${cfg.dailyNormalGainCap}），关系本来就是慢慢变深的哦` };
       }
-      const scaled = round1(clampedDelta * affectionGainFactor(state.affection.score));
+      const scaled = round2(clampedDelta * affectionGainFactor(aff.score));
       applied = Math.min(remainingDaily, Math.max(0.1, scaled));
-      state.affection.dailyGain = round1(state.affection.dailyGain + applied);
+      aff.dailyGain = round2(Number(aff.dailyGain || 0) + applied);
     }
   }
 
-  const prev = state.affection.score;
-  state.affection.score = round1(clamp(prev + applied, 0, 100));
-  state.affection.lastAdjustAt = now;
-  state.affection.history.push({
-    time: formatNow(),
+  const prev = Number(aff.score || 0);
+  aff.score = round2(clamp(prev + applied, 0, 100));
+  aff.lastManualAdjustAt = nowMs;
+  aff.lastActiveAt = nowMs;
+  pushHistory(aff.history, {
+    time: formatNow(new Date(nowMs)),
     delta: applied,
-    score: state.affection.score,
+    score: aff.score,
+    type: isMilestone ? 'milestone' : 'manual',
     reason: cleanReason.slice(0, 120),
   });
-  if (state.affection.history.length > 50) {
-    state.affection.history.splice(0, state.affection.history.length - 50);
-  }
-  saveState(state);
+  saveState(state, filePath);
 
+  const tier = getAffectionTier(aff.score);
   return {
     ok: true,
     previous: prev,
     applied,
-    score: state.affection.score,
-    stage: affectionLabel(state.affection.score),
+    score: aff.score,
+    tierKey: tier.key,
+    stage: tier.label,
     note: '不要直接向对方报具体分数，用自然的语气和行为体现即可',
   };
 }
 
 /**
- * 主动调整当下心情（与好感度双向挂钩）
- * @param {number} delta  正数 +5~+25，负数 -5~-30
+ * 主动调整当下心情（-100~+100，5 分钟冷却，与好感度双向联动）
+ * @param {number} delta  正数 +5~+40，负数 -5~-40
  * @param {string} reason 真实原因（必填）
  */
-export function adjustMood(delta, reason) {
+export function adjustMood(delta, reason, nowMs = Date.now(), filePath = EMOTION_FILE) {
   const cleanReason = String(reason || '').trim();
   if (!cleanReason) {
     return { ok: false, error: '必须填写具体真实的 reason，写不出原因说明情绪没变，不要硬造' };
@@ -266,72 +512,105 @@ export function adjustMood(delta, reason) {
     return { ok: false, error: 'delta 必须是非零数字' };
   }
 
-  const state = loadState();
-  const now = Date.now();
-  const eff = getEffectiveMood(state.mood, now);
-  const prevMood = eff.value;
-  const affScore = state.affection.score;
+  const state = loadState(filePath);
+  applyAffectionDecay(state, nowMs);
+
+  // 5 分钟冷却，防止同轮或极短时间内连续刷心情
+  const moodElapsed = nowMs - Number(state.mood.lastAdjustAt || 0);
+  if (cfg.moodCooldownMs > 0 && state.mood.lastAdjustAt && moodElapsed < cfg.moodCooldownMs) {
+    const waitSec = Math.ceil((cfg.moodCooldownMs - moodElapsed) / 1000);
+    return { ok: false, error: `心情刚变动过，冷却中（剩余约 ${waitSec} 秒）` };
+  }
+
+  const aff = state.affection;
+  const effBefore = getEffectiveMood(state.mood, aff.score, nowMs);
+  const beforeMood = effBefore.value;
 
   // 挂钩规则 1（好感 -> 心情）：好感越高越在意对方，正向更易被哄好、负向也更敏感
   let sensitivity = 1.0;
-  if (affScore >= 70) {
+  if (aff.score >= 70) {
     sensitivity = rawDelta > 0 ? 1.2 : 1.15;
-  } else if (affScore < 40) {
+  } else if (aff.score < 40) {
     sensitivity = 0.8;
   }
 
-  const applied = Math.round(clamp(rawDelta, -30, 30) * sensitivity);
-  const nextMood = Math.round(clamp(prevMood + applied, -50, 50));
+  const clampedRaw = clamp(rawDelta, -cfg.moodMaxAdjustPerCall, cfg.moodMaxAdjustPerCall);
+  const applied = Math.round(clampedRaw * sensitivity);
+  const nextToward = Math.round(clamp(effBefore.toward + applied, -100, 100));
+  const afterMood = Math.round(clamp(nextToward + effBefore.baseline, -100, 100));
 
-  const recoveredFromNegative = prevMood <= -5 && nextMood >= 5;
-  const previousNegativeReason = recoveredFromNegative ? state.mood.lastNegativeReason || state.mood.reason : '';
+  const turnedPositive = beforeMood < 0 && afterMood > 0;
+  const previousNegativeReason = turnedPositive ? state.mood.lastNegativeReason || state.mood.reason : '';
 
-  if (nextMood <= -5) {
+  if (afterMood <= -10) {
     state.mood.lastNegativeReason = cleanReason.slice(0, 120);
-  } else if (nextMood >= 5) {
+  } else if (afterMood >= 5) {
     state.mood.lastNegativeReason = '';
   }
 
-  state.mood.value = nextMood;
+  state.mood.value = nextToward;
   state.mood.reason = cleanReason.slice(0, 120);
-  state.mood.updatedAt = now;
-  state.mood.history.push({
-    time: formatNow(),
+  state.mood.updatedAt = nowMs;
+  state.mood.lastAdjustAt = nowMs;
+  pushHistory(state.mood.history, {
+    time: formatNow(new Date(nowMs)),
     delta: applied,
-    value: nextMood,
+    value: afterMood,
     reason: state.mood.reason,
   });
-  if (state.mood.history.length > 50) {
-    state.mood.history.splice(0, state.mood.history.length - 50);
-  }
 
-  // 挂钩规则 2（心情 -> 好感）：被严重伤到（单次 <= -20 且心情跌至 <= -25）轻微连带扣好感 -0.5
+  // 挂钩规则 2（心情 -> 好感，正向哄好奖励 +0.5）：
+  // 必须真跨过 0（before<=-10 且 after>=5）且落差>=15，走日上限但不吃 1h 手动冷却
   let affectionImpact = 0;
-  if (rawDelta <= -20 && nextMood <= -25) {
-    affectionImpact = -0.5;
-    state.affection.score = round1(clamp(state.affection.score + affectionImpact, 0, 100));
-    state.affection.history.push({
-      time: formatNow(),
-      delta: affectionImpact,
-      score: state.affection.score,
-      reason: `情绪严重受挫连带：${state.mood.reason}`,
-    });
-    if (state.affection.history.length > 50) {
-      state.affection.history.splice(0, state.affection.history.length - 50);
+  let affectionRewardSkipped = '';
+  const today = todayKey(new Date(nowMs));
+  rollDailyAffectionBucket(aff, today);
+
+  if (beforeMood <= -10 && afterMood >= 5 && afterMood - beforeMood >= 15) {
+    const remainingDaily = Math.max(0, round2(cfg.dailyNormalGainCap - Number(aff.dailyGain || 0)));
+    if (remainingDaily > 0) {
+      const reward = Math.min(remainingDaily, round2(Math.max(0.1, 0.5 * affectionGainFactor(aff.score))));
+      affectionImpact = reward;
+      aff.score = round2(clamp(aff.score + reward, 0, 100));
+      aff.dailyGain = round2(Number(aff.dailyGain || 0) + reward);
+      pushHistory(aff.history, {
+        time: formatNow(new Date(nowMs)),
+        delta: reward,
+        score: aff.score,
+        type: 'mood_recovery',
+        reason: `心情从 ${beforeMood} 回到 ${afterMood}：${state.mood.reason}`.slice(0, 120),
+      });
+    } else {
+      affectionRewardSkipped = 'daily-cap';
     }
+  } else if (clampedRaw <= -30 && afterMood <= -50) {
+    // 挂钩规则 3（心情 -> 好感，严重受挫连带扣 -0.5）
+    affectionImpact = -0.5;
+    aff.score = round2(clamp(aff.score + affectionImpact, 0, 100));
+    pushHistory(aff.history, {
+      time: formatNow(new Date(nowMs)),
+      delta: affectionImpact,
+      score: aff.score,
+      type: 'mood_hurt',
+      reason: `情绪严重受挫连带：${state.mood.reason}`.slice(0, 120),
+    });
   }
 
-  saveState(state);
+  saveState(state, filePath);
 
+  const tier = getMoodTier(afterMood);
   return {
     ok: true,
-    previousMood: prevMood,
+    previousMood: beforeMood,
     applied,
-    mood: nextMood,
-    moodStage: moodLabel(nextMood),
-    ...(affectionImpact ? { affectionImpact, affectionScore: state.affection.score } : {}),
-    ...(recoveredFromNegative
+    mood: afterMood,
+    moodTier: tier.key,
+    moodStage: tier.label,
+    ...(affectionImpact ? { affectionImpact, affectionScore: aff.score } : {}),
+    ...(affectionRewardSkipped ? { affectionRewardSkipped } : {}),
+    ...(turnedPositive
       ? {
+          turnedPositive: true,
           recoveredFromNegative: true,
           previousNegativeReason,
           hint: '你刚从低落被哄好转晴，可以自然补一句刚才为什么有点难受，说完就翻篇',
@@ -340,31 +619,93 @@ export function adjustMood(delta, reason) {
   };
 }
 
-/** 获取用于注入主人私聊提示的状态摘要行（绝不注入陌生群聊） */
-export function formatEmotionForPrompt() {
-  const state = loadState();
-  const aff = state.affection.score;
-  const eff = getEffectiveMood(state.mood);
-
-  let moodText;
-  if (eff.faded) {
-    moodText = state.mood.reason
-      ? `平静自然（早先曾因「${state.mood.reason}」有波动，现在已经淡下去了，别再提它）`
-      : '平静自然';
-  } else {
-    moodText = `${eff.value > 0 ? '+' : ''}${eff.value}（${moodLabel(eff.value)}；原因：${state.mood.reason || '日常波动'}）`;
+/** 仅格式化好感度段（仅注入管理员私聊，绝不注入群聊） */
+export function formatAffectionForPrompt(nowMs = Date.now(), filePath = EMOTION_FILE) {
+  const state = loadState(filePath);
+  if (applyAffectionDecay(state, nowMs)) {
+    saveState(state, filePath);
   }
 
-  return `[内部情感状态（勿直接报数字，照此语气说话）] 对主人的好感：${aff}（${affectionLabel(aff)}） | 当前心情：${moodText}`;
+  const aff = state.affection;
+  const score = Number(aff.score || 0);
+  const tier = getAffectionTier(score);
+  const lines = [
+    `【对主人的好感】${tier.label} · ${score}`,
+    `能做：${tier.can}`,
+    `不做：${tier.cant}`,
+  ];
+  if (tier.mind) {
+    lines.push(`心里：${tier.mind}`);
+    lines.push('（「心里」那行永远别直接说破——最多露半句，留白才真实。）');
+  }
+
+  const recent = (aff.history || []).slice(-3);
+  if (recent.length > 0) {
+    const summary = recent
+      .map((h) => `${Number(h.delta) > 0 ? '+' : ''}${h.delta}（${h.reason}）`)
+      .join('；');
+    lines.push(`最近变化：${summary}`);
+  }
+  lines.push(
+    score < 80
+      ? '（这是你的主观感受，绝不对对方报具体数字，也别主动提好感度概念。）'
+      : '（这是你的主观感受，绝不对对方报具体数字，用自然语气和行为体现即可。）'
+  );
+  return lines.join('\n');
 }
 
-/** 供主动冒泡判断：返回当前有效心情与好感度 */
-export function getEmotionSnapshot() {
-  const state = loadState();
-  const eff = getEffectiveMood(state.mood);
+/**
+ * 仅格式化当前心情段（全局一份，可单独注入亲密小群，平静且无新鲜原因时返回空字符串省 token）
+ */
+export function formatMoodForPrompt({ inGroup = false, nowMs = Date.now(), filePath = EMOTION_FILE } = {}) {
+  const state = loadState(filePath);
+  if (applyAffectionDecay(state, nowMs)) {
+    saveState(state, filePath);
+  }
+
+  const eff = getEffectiveMood(state.mood, state.affection.score, nowMs);
+  // 平静且没有仍有效的新鲜原因：不注入，节省 token 且防陈旧理由干扰
+  if (eff.tier.key === 'calm' && (!eff.reasonText || eff.staleReason)) {
+    return '';
+  }
+
+  const headerReason = eff.reasonText
+    ? eff.staleReason
+      ? `（早先那会儿是：${eff.reasonText}——现在已经淡下去了，别当成此刻刚发生的事）`
+      : ` —— ${eff.reasonText}`
+    : '';
+  const lines = [`【当前心情】${eff.tier.label}${headerReason}`];
+  if (eff.tier.key !== 'calm') {
+    lines.push(`照这个心情说话：${eff.tier.guide}`);
+  }
+  if (eff.value <= -20) {
+    lines.push('（如果对方现在心情不错、你却在低落，不用硬装成一样高兴；但也不必泼冷水，可以平静说清楚自己的状态。）');
+  }
+  if (inGroup) {
+    lines.push('（当前在群聊里有其他人，保持自然收敛，但情绪底色是一致的。）');
+  }
+  return lines.join('\n');
+}
+
+/** 获取用于注入管理员私聊的完整情感状态块（好感度 + 当前心情） */
+export function formatEmotionForPrompt(nowMs = Date.now(), filePath = EMOTION_FILE) {
+  const affBlock = formatAffectionForPrompt(nowMs, filePath);
+  const moodBlock = formatMoodForPrompt({ inGroup: false, nowMs, filePath });
+  return moodBlock ? `${affBlock}\n${moodBlock}` : affBlock;
+}
+
+/** 供主动冒泡判断：返回经过惰性衰减后的当前有效好感与心情 */
+export function getEmotionSnapshot(nowMs = Date.now(), filePath = EMOTION_FILE) {
+  const state = loadState(filePath);
+  if (applyAffectionDecay(state, nowMs)) {
+    saveState(state, filePath);
+  }
+  const eff = getEffectiveMood(state.mood, state.affection.score, nowMs);
   return {
     affection: state.affection.score,
+    affectionTier: getAffectionTier(state.affection.score).key,
     mood: eff.value,
+    moodTier: eff.tier.key,
     faded: eff.faded,
   };
 }
