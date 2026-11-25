@@ -99,7 +99,7 @@
   },
 
   "groupTrigger": {
-    "_comment": "【8. 群聊唤醒与防多 Bot 互怼策略】atMention=@唤醒; replyToMe=引用机器人消息唤醒; keywords=额外硬唤醒词(默认自动读 persona.txt); topicKeywords=额外兴趣话题词(自动合并 persona.txt 的 topics); topicBoostStep=每点话题热度增加概率(0.25); topicMaxBoost=话题热度最高加成(0.45); ownerRandomReplyProbability=管理员说话时的优先唤醒概率(0.75); ownerReplyCooldownMs=管理员独立冷却(10秒); ownerFollowupWindowMs=刚回完话后管理员连聊加成窗口(90秒内额外+0.20); followupWindowMs/followupBoost/followupCooldownMs=刚回完话60秒内全员/AI伙伴短时续聊加成(+0.35,冷却8秒,仍受无管理员连聊上限兜底); randomReplyProbability=普通群友默认随机插话概率(0.30); botRandomReplyProbability=同群其他AI机器人基础接话概率(0.15); randomReplyCooldownMs=非管理员基础随机插话冷却(30秒); maxConsecutiveWithoutOwner=无管理员时最多连续接话轮数(防双AI死循环); logSkipped=未触发群消息打印已入库原因日志",
+    "_comment": "【8. 群聊唤醒与防多 Bot 互怼策略】atMention=@唤醒; replyToMe=引用机器人消息唤醒; keywords=额外硬唤醒词(默认自动读 persona.txt); topicKeywords=额外兴趣话题词(自动合并 persona.txt 的 topics); ownerRandomReplyProbability=管理员优先唤醒概率(0.75); followupWindowMs/followupBoost/followupCooldownMs=刚回完话60秒内续聊窗口; followupEchoEnabled=开启上句原话实词回声0ms直判; followupDirectWindowMs=刚回完话25秒内第二人称直指判定; semanticJudge=免配小模型自动适配语义裁判(mode=auto: HTTP主模型直接关思考极速复用, agy-cli优先用已配Key的HTTP模型否则自动降级为主模型[SKIP]静默权); maxConsecutiveWithoutOwner=无管理员时最多连聊轮数(防双AI死循环); logSkipped=未触发群消息打印已入库原因日志",
     "atMention": true,
     "replyToMe": true,
     "keywords": [],
@@ -112,11 +112,22 @@
     "followupWindowMs": 60000,
     "followupBoost": 0.35,
     "followupCooldownMs": 8000,
+    "followupEchoEnabled": true,
+    "followupDirectWindowMs": 25000,
     "randomReplyProbability": 0.3,
     "botRandomReplyProbability": 0.15,
     "randomReplyCooldownMs": 30000,
     "maxConsecutiveWithoutOwner": 2,
-    "logSkipped": true
+    "logSkipped": true,
+    "semanticJudge": {
+      "enabled": true,
+      "mode": "auto",
+      "provider": "",
+      "model": "",
+      "maxContextMessages": 6,
+      "timeoutMs": 8000,
+      "cooldownMs": 4000
+    }
   },
 
   "reply": {

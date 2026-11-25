@@ -306,6 +306,105 @@ const llm = createLlmClient({
   getSystemInstruction,
 });
 
+/**
+ * 解析群聊后续语义裁判客户端（零额外配置自动适配）：
+ *   1. 若显式指定了 semanticJudge.provider -> 用该 HTTP 提供商；
+ *   2. 若当前主模型是 HTTP 协议（DeepSeek/OpenAI/Gemini/Claude）-> 直接复用当前模型（关思考、0 工具、max_tokens=16）；
+ *   3. 若当前主模型是 agy-cli：优先探测已配置有效 Key 的 HTTP 轻量模型（如 gemini + captionModel），没有则自动降级为主模型 [SKIP] 静默权。
+ */
+function resolveSemanticJudge() {
+  const sj = config.groupTrigger?.semanticJudge || {};
+  if (sj.enabled === false) {
+    return { mode: 'off', client: null, model: '', label: '关' };
+  }
+  const reqMode = String(sj.mode || 'auto').trim().toLowerCase();
+  if (reqMode === 'off' || reqMode === 'none') {
+    return { mode: 'off', client: null, model: '', label: '关' };
+  }
+  if (reqMode === 'skip') {
+    return { mode: 'skip', client: null, model: '', label: '主模型[SKIP]静默权' };
+  }
+
+  const providers = config.llm?.providers && typeof config.llm.providers === 'object' ? config.llm.providers : {};
+  const buildHttpJudge = (pName, modelOverride = '') => {
+    const entry = providers[pName];
+    if (!entry || typeof entry !== 'object') return null;
+    const proto = String(entry.protocol || pName).trim().toLowerCase();
+    if (proto === 'agy-cli' || proto === 'agy' || proto === 'antigravity') return null;
+    const envFallbackKey =
+      process.env[`${pName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_API_KEY`] ||
+      process.env.LLM_API_KEY ||
+      (proto === 'gemini' || proto === 'google' ? process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY : '') ||
+      (proto === 'anthropic' || proto === 'claude' ? process.env.ANTHROPIC_API_KEY : '') ||
+      (proto === 'openai' || proto === 'deepseek' ? process.env.OPENAI_API_KEY : '');
+    const apiKey = expandEnvString(entry.apiKey) || envFallbackKey || '';
+    const baseUrl = expandEnvString(entry.baseUrl) || process.env.LLM_BASE_URL || '';
+    const fallbacks = Array.isArray(entry.fallbackModels) ? entry.fallbackModels.filter(Boolean) : [];
+    const targetModel =
+      String(modelOverride || '').trim() ||
+      (proto === 'gemini' || proto === 'google' ? String(config.mediaArchive?.captionModel || '').trim() : '') ||
+      fallbacks[0] ||
+      String(entry.model || '').trim();
+    if (!apiKey || apiKey.startsWith('请替换') || !targetModel) return null;
+    if ((proto === 'openai' || proto === 'deepseek' || proto === 'anthropic' || proto === 'claude') && !baseUrl) {
+      return null;
+    }
+    try {
+      const client = createLlmClient({
+        providerName: `${pName}-judge`,
+        protocol: proto,
+        apiKey,
+        baseUrl,
+        model: targetModel,
+        fallbackModels: fallbacks,
+        temperature: 0,
+        maxTokens: 16,
+        thinkingLevel: 'none',
+        tools: [],
+        getSystemInstruction: () => '',
+      });
+      if (client?.supportsQuickJudge && typeof client.quickText === 'function') {
+        return { mode: 'http', client, model: targetModel, label: `轻量HTTP裁判(${pName}/${targetModel})` };
+      }
+    } catch {}
+    return null;
+  };
+
+  const explicitProvider = String(sj.provider || '').trim();
+  const explicitModel = String(sj.model || '').trim();
+  if (explicitProvider) {
+    const ext = buildHttpJudge(explicitProvider, explicitModel);
+    if (ext) return ext;
+  }
+
+  if (llm?.supportsQuickJudge && typeof llm.quickText === 'function') {
+    const targetModel = explicitModel || llmModel;
+    return {
+      mode: 'http',
+      client: llm,
+      model: explicitModel,
+      label: `复用当前模型(${llmProvider}/${targetModel}, 关思考极速判定)`,
+    };
+  }
+
+  // 主模型是 agy-cli 且未显式指定裁判：优先找已配好 Key 的轻量 HTTP 提供商，否则退回主模型 [SKIP]
+  const preferredOrder = ['gemini', 'deepseek', 'openai', 'claude', ...Object.keys(providers)];
+  const tried = new Set();
+  for (const pName of preferredOrder) {
+    if (!pName || pName.startsWith('_') || tried.has(pName)) continue;
+    tried.add(pName);
+    const ext = buildHttpJudge(pName, explicitModel);
+    if (ext) return ext;
+  }
+
+  if (reqMode === 'http') {
+    return { mode: 'off', client: null, model: '', label: '关(无可用HTTP裁判)' };
+  }
+  return { mode: 'skip', client: null, model: '', label: '主模型[SKIP]静默权' };
+}
+
+const semanticJudge = resolveSemanticJudge();
+
 // 每个会话串行排队，避免并发消息打乱 previous_interaction_id
 const chatQueues = new Map();
 function enqueue(chatKey, task) {
@@ -498,6 +597,11 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
     rememberMyMessageId(res);
     const msgId = res?.data?.message_id != null ? String(res.data.message_id) : '';
     if (msgId) lastMsgId = msgId;
+    if (event.message_type === 'group') {
+      const gKey = String(event.group_id);
+      lastGroupBotReplyAt.set(gKey, Date.now());
+      lastGroupBotReplyText.set(gKey, parts.slice(0, i + 1).join('\n').slice(0, 300));
+    }
 
     recordRecentMessage(chatKey, {
       message_id: msgId || 'self',
@@ -720,13 +824,119 @@ function isAllowedTarget(type, id) {
   return false;
 }
 
-// 活跃追踪 + 群聊冒泡冷却 + 管理员独立冷却/连聊窗口 + 防 AI 互怼死循环计数
+// 活跃追踪 + 群聊冒泡冷却 + 管理员独立冷却/连聊窗口 + 上句回声缓存 + 语义裁判冷却 + 防 AI 互怼死循环计数
 const lastActivityAt = new Map();
 const proactiveSentSinceLastActivity = new Set();
 const lastRandomReplyAt = new Map();
 const lastOwnerRandomReplyAt = new Map();
 const lastGroupBotReplyAt = new Map();
+const lastGroupBotReplyText = new Map();
+const lastSemanticJudgeAt = new Map();
 const nonOwnerStreak = new Map();
+
+const ECHO_STOPWORDS = new Set([
+  '什么', '怎么', '怎样', '还是', '就是', '不是', '已经', '因为', '所以', '但是', '不过', '其实',
+  '如果', '可以', '一下', '这个', '那个', '这样', '那样', '我们', '你们', '他们', '自己', '大家',
+  '哈哈', '呵呵', '嘻嘻', '嗯嗯', '好的', '好吧', '好呀', '知道', '觉得', '真的', '没有', '现在',
+  '今天', '明天', '昨天', '刚才', '时候', '东西', '事情', '有点', '一点', '这么', '那么', '不会',
+  '不要', '不能', '应该', '可能', '好像', '感觉', '出来', '起来', '进去', '回去', '过来', '过去',
+  '老大', '主人', '群主', '管理员',
+]);
+
+/** 提取并匹配机器人上一条群回复与当前群消息的实词回声（0ms，过滤常见虚词防误触发） */
+function findEchoOverlap(botLastText, incomingText) {
+  const prev = String(botLastText || '').trim();
+  const cur = String(incomingText || '').trim().toLowerCase();
+  if (!prev || cur.length < 2) return '';
+  const spans = prev.match(/[\u4e00-\u9fa5A-Za-z0-9]{2,}/g) || [];
+  for (const rawSpan of spans) {
+    const span = rawSpan.toLowerCase();
+    for (let len = Math.min(4, span.length); len >= 2; len--) {
+      for (let i = 0; i + len <= span.length; i++) {
+        const sub = span.slice(i, i + len);
+        if (/^\d+$/.test(sub)) continue;
+        if (len === 2 && (ECHO_STOPWORDS.has(sub) || /^[a-z]{2}$/.test(sub))) continue;
+        if (cur.includes(sub)) return rawSpan.slice(i, i + len);
+      }
+    }
+  }
+  return '';
+}
+
+/** 判断消息是否显式点名了同群其他 AI 伙伴（避免别人叫另一只 Bot 时抢答） */
+function mentionsOtherAiBot(text) {
+  const lower = String(text || '').toLowerCase();
+  if (!lower) return false;
+  const myKws = new Set(
+    [getPersona().name, ...(getPersona().keywords || []), ...(config.groupTrigger?.keywords || [])]
+      .map((s) => String(s || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  for (const info of Object.values(config.identity?.aiBots || {})) {
+    const name = String(typeof info === 'string' ? info : info?.name || '').trim().toLowerCase();
+    if (name.length >= 2 && !myKws.has(name) && lower.includes(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 第一层零成本续聊强相关检测（仅在刚回完话的续聊窗口内运行，0ms / 0 Token）：
+ *   1. 回声匹配：对方复述了机器人上一句里的 2~4 字实词（如复述关键词/刚聊到的梗）；
+ *   2. 短时第二人称紧接：机器人刚说完话 25 秒内，对方没 @ 别人、没点名其他 Bot，直接用“你/您”搭话。
+ */
+function detectFollowupDirectSignal(gKey, text, mentionedUserIds, sinceBotReply, isOwner) {
+  if (!text || text.length < 2) return null;
+  if (Array.isArray(mentionedUserIds) && mentionedUserIds.length > 0) return null;
+  if (mentionsOtherAiBot(text)) return null;
+
+  if (config.groupTrigger?.followupEchoEnabled !== false) {
+    const echo = findEchoOverlap(lastGroupBotReplyText.get(gKey), text);
+    if (echo) {
+      return { reason: 'followup_echo', detail: echo };
+    }
+  }
+
+  const directWin = Number(config.groupTrigger?.followupDirectWindowMs ?? 25000);
+  if (directWin > 0 && sinceBotReply <= directWin) {
+    const talksToOwner = !isOwner && /(?:老大|主人|群主|管理员)\s*你/.test(text);
+    if (!talksToOwner && /(?:你(?!们)|您)/.test(text)) {
+      return { reason: 'followup_direct', detail: '第二人称紧接' };
+    }
+  }
+  return null;
+}
+
+/** 第二层 HTTP 语义裁判（复用当前 HTTP 模型关思考极速判 YES/NO，或使用配置的轻量 HTTP 模型） */
+async function runHttpSemanticJudge(chatKey, senderLabel, incomingText) {
+  if (semanticJudge.mode !== 'http' || !semanticJudge.client?.quickText) return null;
+  const sj = config.groupTrigger?.semanticJudge || {};
+  const maxCtx = Math.max(2, Math.min(10, Number(sj.maxContextMessages ?? 6)));
+  const recent = getRecentMessages(chatKey, maxCtx + 1).slice(0, -1);
+  const historyLines = recent.map((m) => `${m.time} [${m.sender}]: ${m.text}`).join('\n');
+  const persona = getPersona();
+  const aliasList = [...new Set([persona.name, ...(persona.keywords || [])].filter(Boolean))].join(' / ');
+  const prompt =
+    `你是群聊相关性判断助手。当前角色叫「${persona.name}」（别名/唤醒词：${aliasList || persona.name}）。\n` +
+    `请结合下面最近几条群聊记录，判断最新一条消息是不是在对「${persona.name}」说话、回应「${persona.name}」刚说的话，或者「${persona.name}」顺嘴接一句很自然。\n` +
+    `如果明显是在和别人聊天、与「${persona.name}」无关，输出 NO；如果相关或适合接茬，输出 YES。\n` +
+    `只输出 YES 或 NO，不要任何解释。\n\n` +
+    `【最近群聊】\n${historyLines || '（无）'}\n` +
+    `【最新消息】\n[${senderLabel}]: ${incomingText}`;
+  const raw = await semanticJudge.client.quickText(prompt, {
+    preferredModel: semanticJudge.model || '',
+    maxTokens: 16,
+    timeoutMs: Number(sj.timeoutMs ?? 8000),
+  });
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  if (/\bYES\b/.test(upper) && !/\bNO\b/.test(upper)) return true;
+  if (/\bNO\b/.test(upper) && !/\bYES\b/.test(upper)) return false;
+  if (/^(是|相关|需要|回复)/.test(raw.trim())) return true;
+  if (/^(否|不是|无关|不用|跳过)/.test(raw.trim())) return false;
+  return null;
+}
 
 function touchActivity(chatKey) {
   lastActivityAt.set(chatKey, Date.now());
@@ -779,8 +989,8 @@ function computeGroupTopicHeat(chatKey, currentText) {
 }
 
 /**
- * 群聊唤醒判定：依次检查防多 Bot 死循环护栏 -> @ -> 引用回复 -> 人设关键词 -> 管理员优先/短时续聊窗口/话题热度/普通群友概率。
- * 返回 { reason, matchedTopics, skipReason }（reason 为 null 表示仅入库不回复）。
+ * 群聊唤醒判定：依次检查防多 Bot 死循环护栏 -> @ -> 引用回复 -> 人设关键词 -> 续聊回声/第二人称直指 -> 管理员优先/短时续聊窗口/话题热度/普通群友概率。
+ * 返回 { reason, matchedTopics, skipReason, directDetail, eligibleForSemanticJudge }（reason 为 null 表示暂未触发）。
  */
 function checkGroupTrigger(
   groupId,
@@ -790,7 +1000,8 @@ function checkGroupTrigger(
   replyId,
   hasImage = false,
   speaker = null,
-  chatKey = ''
+  chatKey = '',
+  mentionedUserIds = []
 ) {
   const gKey = String(groupId);
   const isOwner = Boolean(config.ownerId) && String(senderId) === String(config.ownerId);
@@ -820,7 +1031,7 @@ function checkGroupTrigger(
     return { reason: 'reply', matchedTopics: [], skipReason: '' };
   }
 
-  // 非显式触发（关键词 / 话题 / 续聊 / 随机插话）：无主人参与时连续接话达上限则暂停
+  // 非显式触发（关键词 / 回声 / 话题 / 续聊 / 随机插话）：无主人参与时连续接话达上限则暂停
   if (!isOwner && currentStreak >= maxStreak) {
     return { reason: null, matchedTopics: [], skipReason: `无主人连聊达上限(${currentStreak}/${maxStreak})` };
   }
@@ -832,13 +1043,40 @@ function checkGroupTrigger(
     return { reason: 'keyword', matchedTopics: [], skipReason: '' };
   }
 
+  const now = Date.now();
+  const lastBotReply = lastGroupBotReplyAt.get(gKey) || 0;
+  const sinceBotReply = lastBotReply > 0 ? now - lastBotReply : Infinity;
+  const followupWindowMs = Number(config.groupTrigger?.followupWindowMs ?? 60000);
+  const ownerFollowupWindowMs = Number(config.groupTrigger?.ownerFollowupWindowMs ?? 90000);
+  const inFollowup = followupWindowMs > 0 && sinceBotReply <= followupWindowMs;
+  const inOwnerFollowup = ownerFollowupWindowMs > 0 && sinceBotReply <= ownerFollowupWindowMs;
+
+  // 第一层零成本本地强相关检测：刚回完话续聊窗口内，复述上句实词或短时第二人称直指 -> 直接接话（仍受无主人连聊上限兜底）
+  if (inFollowup || (isOwner && inOwnerFollowup)) {
+    const directSig = detectFollowupDirectSignal(gKey, text, mentionedUserIds, sinceBotReply, isOwner);
+    if (directSig) {
+      if (isOwner) {
+        lastOwnerRandomReplyAt.set(gKey, now);
+      } else {
+        lastRandomReplyAt.set(gKey, now);
+        nonOwnerStreak.set(gKey, currentStreak + 1);
+      }
+      return { reason: directSig.reason, matchedTopics: [], skipReason: '', directDetail: directSig.detail };
+    }
+  }
+
   // 计算角色兴趣话题热度加成（0 延迟、0 API 消耗）
   const { heat, matchedWords } = computeGroupTopicHeat(chatKey || `group:${gKey}`, text);
   const topicBoostStep = Number(config.groupTrigger?.topicBoostStep ?? 0.25);
   const topicMaxBoost = Number(config.groupTrigger?.topicMaxBoost ?? 0.45);
   const topicBoost = heat > 0 ? Math.min(topicMaxBoost, heat * topicBoostStep) : 0;
-  const now = Date.now();
-  const sinceBotReply = now - (lastGroupBotReplyAt.get(gKey) || 0);
+
+  const canSemanticJudge =
+    semanticJudge.mode !== 'off' &&
+    (inFollowup || (isOwner && inOwnerFollowup)) &&
+    text.length >= 2 &&
+    (!Array.isArray(mentionedUserIds) || mentionedUserIds.length === 0) &&
+    !mentionsOtherAiBot(text);
 
   // 管理员发言专属通道：更高唤醒概率 + 更短独立冷却 + 刚聊过天时的连聊窗口加成 + 话题热度加成
   if (isOwner) {
@@ -848,29 +1086,28 @@ function checkGroupTrigger(
         0.75
     );
     if (baseOwnerProb <= 0) {
-      return { reason: null, matchedTopics: matchedWords, skipReason: '管理员随机回复已关闭' };
+      return { reason: null, matchedTopics: matchedWords, skipReason: '管理员随机回复已关闭', eligibleForSemanticJudge: canSemanticJudge };
     }
     if (text.length < 1 && !hasImage) {
       return { reason: null, matchedTopics: matchedWords, skipReason: '消息内容为空' };
     }
     const ownerCooldownMs = Number(config.groupTrigger?.ownerReplyCooldownMs ?? 10000);
-    const followupWindowMs = Number(config.groupTrigger?.ownerFollowupWindowMs ?? 90000);
-    const inFollowup = followupWindowMs > 0 && sinceBotReply <= followupWindowMs;
-    const prob = Math.min(0.95, baseOwnerProb + (inFollowup ? 0.2 : 0) + topicBoost);
+    const prob = Math.min(0.95, baseOwnerProb + (inOwnerFollowup ? 0.2 : 0) + topicBoost);
     const last = lastOwnerRandomReplyAt.get(gKey) || 0;
     if (now - last < ownerCooldownMs) {
       const remainSec = Math.max(1, Math.ceil((ownerCooldownMs - (now - last)) / 1000));
-      return { reason: null, matchedTopics: matchedWords, skipReason: `管理员冷却中(剩${remainSec}s)` };
+      return { reason: null, matchedTopics: matchedWords, skipReason: `管理员冷却中(剩${remainSec}s)`, eligibleForSemanticJudge: canSemanticJudge };
     }
     if (Math.random() < prob) {
       lastOwnerRandomReplyAt.set(gKey, now);
-      const reason = topicBoost > 0 ? 'owner_topic' : inFollowup ? 'owner_followup' : 'owner_random';
+      const reason = topicBoost > 0 ? 'owner_topic' : inOwnerFollowup ? 'owner_followup' : 'owner_random';
       return { reason, matchedTopics: matchedWords, skipReason: '' };
     }
     return {
       reason: null,
       matchedTopics: matchedWords,
-      skipReason: `管理员${inFollowup ? '续聊' : '随机'}概率未中(${Math.round(prob * 100)}%)`,
+      skipReason: `管理员${inOwnerFollowup ? '续聊' : '随机'}概率未中(${Math.round(prob * 100)}%)`,
+      eligibleForSemanticJudge: canSemanticJudge,
     };
   }
 
@@ -879,10 +1116,13 @@ function checkGroupTrigger(
     ? Number(config.groupTrigger?.botRandomReplyProbability ?? 0.15)
     : Number(config.groupTrigger?.randomReplyProbability ?? 0.3);
   if (baseProb <= 0) {
-    return { reason: null, matchedTopics: matchedWords, skipReason: isKnownBot ? 'AI随机接话已关闭' : '随机插话已关闭' };
+    return {
+      reason: null,
+      matchedTopics: matchedWords,
+      skipReason: isKnownBot ? 'AI随机接话已关闭' : '随机插话已关闭',
+      eligibleForSemanticJudge: canSemanticJudge,
+    };
   }
-  const followupWindowMs = Number(config.groupTrigger?.followupWindowMs ?? 60000);
-  const inFollowup = followupWindowMs > 0 && sinceBotReply <= followupWindowMs;
   const followupBoost = inFollowup ? Math.max(0, Number(config.groupTrigger?.followupBoost ?? 0.35)) : 0;
   const prob = isKnownBot
     ? Math.min(0.65, baseProb + followupBoost + topicBoost * 0.5)
@@ -901,6 +1141,7 @@ function checkGroupTrigger(
       reason: null,
       matchedTopics: matchedWords,
       skipReason: `${isKnownBot ? 'AI' : '群'}${inFollowup ? '续聊' : '随机'}冷却中(剩${remainSec}s)`,
+      eligibleForSemanticJudge: canSemanticJudge,
     };
   }
   if (Math.random() < prob) {
@@ -913,6 +1154,7 @@ function checkGroupTrigger(
     reason: null,
     matchedTopics: matchedWords,
     skipReason: `${isKnownBot ? 'AI' : '群友'}${inFollowup ? '续聊' : '随机'}概率未中(${Math.round(prob * 100)}%)`,
+    eligibleForSemanticJudge: canSemanticJudge,
   };
 }
 
@@ -1324,6 +1566,8 @@ async function handleMessage(event) {
   let triggerReason = 'private';
   let matchedTopics = [];
   let skipReason = '';
+  let directDetail = '';
+  let allowSkipTurn = false;
   let quotedMessage;
   if (event.message_type === 'group') {
     const triggerRes = checkGroupTrigger(
@@ -1334,11 +1578,13 @@ async function handleMessage(event) {
       replyId,
       imageUrls.length > 0,
       speaker,
-      chatKey
+      chatKey,
+      mentionedUserIds
     );
     triggerReason = triggerRes?.reason || null;
     matchedTopics = triggerRes?.matchedTopics || [];
     skipReason = triggerRes?.skipReason || '';
+    directDetail = triggerRes?.directDetail || '';
     // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒
     if (!triggerReason && replyId && config.groupTrigger?.replyToMe !== false) {
       const selfId = String(event.self_id || config.snowluma.botId || '');
@@ -1354,6 +1600,41 @@ async function handleMessage(event) {
           triggerReason = 'reply';
           skipReason = '';
           nonOwnerStreak.set(String(event.group_id), isKnownBot ? streak + 1 : 0);
+        }
+      }
+    }
+
+    // 第二层：刚回完话的续聊窗口内若第一层回声/概率未命中，自动走语义裁判（HTTP 极速判 YES/NO，无 HTTP 时退回主模型 [SKIP]）
+    if (!triggerReason && triggerRes?.eligibleForSemanticJudge) {
+      const gKey = String(event.group_id);
+      const sjCooldown = Number(config.groupTrigger?.semanticJudge?.cooldownMs ?? 4000);
+      const nowMs = Date.now();
+      const lastJudge = lastSemanticJudgeAt.get(gKey) || 0;
+      if (nowMs - lastJudge >= sjCooldown) {
+        lastSemanticJudgeAt.set(gKey, nowMs);
+        const isOwnerSender = Boolean(config.ownerId) && String(event.user_id) === String(config.ownerId);
+        if (semanticJudge.mode === 'http') {
+          try {
+            const verdict = await runHttpSemanticJudge(chatKey, speaker.label, rawTextForTrigger);
+            if (verdict === true) {
+              triggerReason = 'followup_semantic';
+              skipReason = '';
+              if (isOwnerSender) {
+                lastOwnerRandomReplyAt.set(gKey, nowMs);
+              } else {
+                lastRandomReplyAt.set(gKey, nowMs);
+                nonOwnerStreak.set(gKey, (nonOwnerStreak.get(gKey) || 0) + 1);
+              }
+            } else if (verdict === false) {
+              skipReason = '语义裁判判定无关(NO)';
+            }
+          } catch (err) {
+            log(`语义裁判异常 (${chatKey}):`, err?.message || err);
+          }
+        } else if (semanticJudge.mode === 'skip') {
+          triggerReason = 'followup_skip_check';
+          skipReason = '';
+          allowSkipTurn = true;
         }
       }
     }
@@ -1446,8 +1727,13 @@ async function handleMessage(event) {
         }
         if (triggerReason === 'random') {
           contextPrefix += '\n（提示：没人特意叫你，你是路过觉得好玩顺嘴插一句，简短自然即可）';
-        } else if (triggerReason === 'followup') {
-          contextPrefix += '\n（提示：你刚才正在群里聊着天，对方紧接着搭话了，顺着刚才的话茬自然接一句即可，简短自然）';
+        } else if (triggerReason === 'followup_echo') {
+          contextPrefix += `\n（提示：对方紧接着提到了你刚才说的「${directDetail || '原话'}」，是在回应你，顺着话茬自然接一句即可）`;
+        } else if (triggerReason === 'followup_direct' || triggerReason === 'followup_semantic' || triggerReason === 'followup') {
+          contextPrefix += '\n（提示：你刚才正在群里聊着天，对方紧接着在跟你搭话，顺着刚才的话茬自然接一句即可，简短自然）';
+        } else if (triggerReason === 'followup_skip_check') {
+          contextPrefix +=
+            '\n（判定提示：对方没 @ 你也没喊你名字，只是在你刚说完话后紧接着发了新消息。如果这句话明显是在跟你搭话或需要你接一句，请直接自然回复；如果明显是在跟别人聊天、和你无关或没必要插嘴，请只输出 [SKIP]，不要说任何其他内容。）';
         } else if (triggerReason === 'topic' || triggerReason === 'owner_topic') {
           const topicStr = matchedTopics.slice(0, 3).join('、');
           contextPrefix += `\n（提示：群里正好聊到你很感兴趣的话题${topicStr ? `「${topicStr}」` : ''}，顺嘴凑过去插一句，简短自然即可）`;
@@ -1535,7 +1821,8 @@ async function handleMessage(event) {
 
       const promptText = `${contextPrefix}\n${currentLine}`;
 
-      log(`收到 ${chatKey} (${senderName}, ${triggerReason}): ${text || fallbackRecordText}`);
+      const triggerTag = directDetail ? `${triggerReason}:${directDetail}` : triggerReason;
+      log(`收到 ${chatKey} (${senderName}, ${triggerTag}): ${text || fallbackRecordText}`);
 
       // 下载当前消息里的图片；若引用了含图消息且未超 3 张上限，一并下载供模型查看
       const images = [];
@@ -1591,16 +1878,40 @@ async function handleMessage(event) {
         persistText: persistLine,
         images,
         toolContext,
+        allowSkip: allowSkipTurn,
       });
+
+      if (allowSkipTurn && toolContext.skipped && !directSent) {
+        if (config.groupTrigger?.logSkipped !== false) {
+          const preview = (recentRecordText || fallbackRecordText || '').replace(/\s+/g, ' ').slice(0, 50);
+          log(`已入库 ${chatKey} (${senderName}, 主模型判断无关 [SKIP]): ${preview}`);
+        }
+        return;
+      }
+
+      if (allowSkipTurn && event.message_type === 'group') {
+        const gKey = String(event.group_id);
+        const isOwnerSender = Boolean(config.ownerId) && String(event.user_id) === String(config.ownerId);
+        if (isOwnerSender) {
+          lastOwnerRandomReplyAt.set(gKey, Date.now());
+        } else {
+          lastRandomReplyAt.set(gKey, Date.now());
+          nonOwnerStreak.set(gKey, (nonOwnerStreak.get(gKey) || 0) + 1);
+        }
+      }
 
       if (reply && !directSent) {
         await sendReply(event, reply);
         if (event.message_type === 'group') {
           lastGroupBotReplyAt.set(String(event.group_id), Date.now());
+          lastGroupBotReplyText.set(String(event.group_id), reply.slice(0, 300));
         }
         log(`回复 ${chatKey}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
       } else if (directSent && event.message_type === 'group') {
         lastGroupBotReplyAt.set(String(event.group_id), Date.now());
+        if (toolContext.directSentText) {
+          lastGroupBotReplyText.set(String(event.group_id), String(toolContext.directSentText).slice(0, 300));
+        }
       }
 
       // 主回复发出后再异步补写图片图注进 state/memory.db（避免与主回复抢并发额度，优先使用 mediaArchive.captionModel 或刚成功的模型）
@@ -1868,6 +2179,9 @@ if (config.reply?.typingDelay !== false) {
     `回复节奏已启用: 首句随机 ${Number(r.firstReplyMinMs ?? 1000)}~${Number(r.firstReplyMaxMs ?? 3000)}ms | 后续气泡 ${Number(r.burstBaseMs ?? 1000)}ms+字数×${Number(r.burstPerCharMs ?? 150)}ms(+0~${Number(r.burstJitterMs ?? 400)}ms, 封顶${Number(r.burstMaxMs ?? 6000)}ms) | 最多拆分 ${Number(r.maxBurstParts ?? 4)} 条`
   );
 }
+log(
+  `群聊续聊判断已就绪: 回声检测 ${config.groupTrigger?.followupEchoEnabled !== false ? '开' : '关'} | 短时指代 ${Math.round(Number(config.groupTrigger?.followupDirectWindowMs ?? 25000) / 1000)}s | 语义裁判 ${semanticJudge.label}`
+);
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);
 log(`本地人物印象库已就绪: ${getImpressionsDbPath()}`);
 initMemoryDb()

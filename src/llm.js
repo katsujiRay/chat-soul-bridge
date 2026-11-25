@@ -93,6 +93,13 @@ function saveTurnToLocalContext(chatKey, text, images, replyText, toolContext, m
 const CAPTION_PROMPT =
   '请用一句不超过 28 个字的客观中文简述图片里的主要内容（人物/物体/文字/场景），直接输出描述本身，不要加“这张图是”或引号。';
 
+/** 判断模型是否输出了静默跳过标记（用于免配小模型时的 [SKIP] 静默权） */
+export function isSkipReply(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return false;
+  return /^\[?\s*SKIP\s*\]?[.。!！~～]*$/i.test(s);
+}
+
 function cleanCaptionText(raw) {
   return String(raw || '')
     .replace(/\s+/g, ' ')
@@ -220,7 +227,32 @@ function createGeminiClient({
   }
 
   return {
+    supportsQuickJudge: true,
     resetSession: (chatKey) => clearContext(chatKey),
+    async quickText(prompt, { preferredModel = '', maxTokens = 16 } = {}) {
+      const text = String(prompt || '').trim();
+      if (!text) return '';
+      const candidates = [...new Set([preferredModel, lastWorkingModel, ...modelChain].filter(Boolean))];
+      for (const targetModel of candidates) {
+        try {
+          const interaction = await ai.interactions.create({
+            model: targetModel,
+            store: false,
+            generation_config: {
+              temperature: 0,
+              max_output_tokens: maxTokens,
+              thinking_level: 'minimal',
+            },
+            input: [{ type: 'user_input', content: [{ type: 'text', text }] }],
+          });
+          const out = String(interaction?.output_text ?? '').trim();
+          if (out) return out;
+        } catch (err) {
+          console.warn(`[llm:${providerName}] 轻量判定模型 ${targetModel} 失败:`, err?.message || err);
+        }
+      }
+      return '';
+    },
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
@@ -247,7 +279,7 @@ function createGeminiClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
@@ -275,6 +307,10 @@ function createGeminiClient({
           );
           lastWorkingModel = targetModel;
           const replyText = (interaction?.output_text ?? '').trim();
+          if (allowSkip && !toolContext?.directSentText && isSkipReply(replyText)) {
+            toolContext.skipped = true;
+            return '';
+          }
           saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
@@ -419,7 +455,35 @@ function createOpenAICompatibleClient({
   }
 
   return {
+    supportsQuickJudge: true,
     resetSession: (chatKey) => clearContext(chatKey),
+    async quickText(prompt, { preferredModel = '', maxTokens = 16, timeoutMs = 8000 } = {}) {
+      const text = String(prompt || '').trim();
+      if (!text) return '';
+      const candidates = [...new Set([preferredModel, lastWorkingModel, ...modelChain].filter(Boolean))];
+      for (const targetModel of candidates) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model: targetModel,
+              temperature: 0,
+              max_tokens: maxTokens,
+              messages: [{ role: 'user', content: text }],
+            }),
+            signal: AbortSignal.timeout(Math.max(2000, Number(timeoutMs) || 8000)),
+          });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const out = String(data?.choices?.[0]?.message?.content ?? '').trim();
+          if (out) return out;
+        } catch (err) {
+          console.warn(`[llm:${providerName}] 轻量判定模型 ${targetModel} 失败:`, err?.message || err);
+        }
+      }
+      return '';
+    },
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
@@ -456,7 +520,7 @@ function createOpenAICompatibleClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const fnTools = toOpenAITools(activeTools);
@@ -493,6 +557,10 @@ function createOpenAICompatibleClient({
         try {
           const replyText = await runWithModel(targetModel, messages, fnTools, toolContext);
           lastWorkingModel = targetModel;
+          if (allowSkip && !toolContext?.directSentText && isSkipReply(replyText)) {
+            toolContext.skipped = true;
+            return '';
+          }
           saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
@@ -625,7 +693,43 @@ function createAnthropicClient({
   }
 
   return {
+    supportsQuickJudge: true,
     resetSession: (chatKey) => clearContext(chatKey),
+    async quickText(prompt, { preferredModel = '', maxTokens = 16, timeoutMs = 8000 } = {}) {
+      const text = String(prompt || '').trim();
+      if (!text) return '';
+      const candidates = [...new Set([preferredModel, lastWorkingModel, ...modelChain].filter(Boolean))];
+      for (const targetModel of candidates) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: targetModel,
+              max_tokens: maxTokens,
+              temperature: 0,
+              messages: [{ role: 'user', content: text }],
+            }),
+            signal: AbortSignal.timeout(Math.max(2000, Number(timeoutMs) || 8000)),
+          });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const out = (data?.content || [])
+            .filter((b) => b?.type === 'text')
+            .map((b) => b.text)
+            .join(' ')
+            .trim();
+          if (out) return out;
+        } catch (err) {
+          console.warn(`[llm:${providerName}] 轻量判定模型 ${targetModel} 失败:`, err?.message || err);
+        }
+      }
+      return '';
+    },
     async captionImages(images = [], preferredModel = '') {
       if (!Array.isArray(images) || images.length === 0) return '';
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images.slice(0, 2));
@@ -667,7 +771,7 @@ function createAnthropicClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const claudeTools = toClaudeTools(activeTools);
@@ -694,6 +798,10 @@ function createAnthropicClient({
         try {
           const replyText = await runWithModel(targetModel, systemInstruction, messages, claudeTools, toolContext);
           lastWorkingModel = targetModel;
+          if (allowSkip && !toolContext?.directSentText && isSkipReply(replyText)) {
+            toolContext.skipped = true;
+            return '';
+          }
           saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
@@ -960,6 +1068,8 @@ function createAgyCliClient({
   }
 
   return {
+    supportsQuickJudge: false,
+    quickText: null,
     resetSession: (chatKey) => {
       killSession(chatKey);
       clearContext(chatKey);
@@ -968,7 +1078,7 @@ function createAgyCliClient({
       // agy-cli 模式下跳过后台额外起进程生成图注，避免多占一轮 CLI 额度
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {} }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
       const session = ensureSession(chatKey);
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
       const tempImgPaths = writeTempImages(normImgs);
@@ -1043,6 +1153,10 @@ function createAgyCliClient({
           nextPayload = `【Chat 工具执行结果（请勿再复述工具名或 JSON，直接用自然人设口语回复用户；如还需继续调工具才输出 [[TOOL_CALL:...]]）】\n${resultLines.join('\n')}`;
         }
 
+        if (allowSkip && !toolContext?.directSentText && isSkipReply(replyText)) {
+          toolContext.skipped = true;
+          return '';
+        }
         saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
         return replyText;
       } catch (err) {

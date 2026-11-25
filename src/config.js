@@ -55,11 +55,22 @@ export const DEFAULT_CONFIG = {
     followupWindowMs: 60000,
     followupBoost: 0.35,
     followupCooldownMs: 8000,
+    followupEchoEnabled: true,
+    followupDirectWindowMs: 25000,
     randomReplyProbability: 0.3,
     botRandomReplyProbability: 0.15,
     randomReplyCooldownMs: 30000,
     maxConsecutiveWithoutOwner: 2,
     logSkipped: true,
+    semanticJudge: {
+      enabled: true,
+      mode: 'auto',
+      provider: '',
+      model: '',
+      maxContextMessages: 6,
+      timeoutMs: 8000,
+      cooldownMs: 4000,
+    },
   },
   proactive: {
     enabled: false,
@@ -279,6 +290,12 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     retcodeGuard: mergeSection(DEFAULT_CONFIG.safety.retcodeGuard, safetyRaw.retcodeGuard),
   };
 
+  const groupTriggerRaw = isPlainObject(raw.groupTrigger) ? stripCommentKeys(raw.groupTrigger) : {};
+  const groupTrigger = {
+    ...mergeSection(DEFAULT_CONFIG.groupTrigger, groupTriggerRaw),
+    semanticJudge: mergeSection(DEFAULT_CONFIG.groupTrigger.semanticJudge, groupTriggerRaw.semanticJudge),
+  };
+
   return {
     ...raw,
     snowluma,
@@ -290,7 +307,7 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     allowAllPrivate: raw.allowAllPrivate === true,
     allow: mergeSection(DEFAULT_CONFIG.allow, raw.allow),
     deny: mergeSection(DEFAULT_CONFIG.deny, raw.deny),
-    groupTrigger: mergeSection(DEFAULT_CONFIG.groupTrigger, raw.groupTrigger),
+    groupTrigger,
     proactive: mergeSection(DEFAULT_CONFIG.proactive, raw.proactive),
     reply,
     safety,
