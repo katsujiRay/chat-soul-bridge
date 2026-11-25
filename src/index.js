@@ -437,18 +437,35 @@ async function sendReply(event, text) {
   const botName = getPersona().name;
   const startSeq = chatIncomingSeq.get(chatKey) || 0;
   const useTypingDelay = config.reply?.typingDelay !== false;
+  const firstMin = Math.max(0, Number(config.reply?.firstReplyMinMs ?? 1000));
+  const firstMax = Math.max(firstMin, Number(config.reply?.firstReplyMaxMs ?? 3000));
+  const burstBase = Math.max(0, Number(config.reply?.burstBaseMs ?? 1000));
+  const burstPerChar = Math.max(0, Number(config.reply?.burstPerCharMs ?? 150));
+  const burstMax = Math.max(burstBase, Number(config.reply?.burstMaxMs ?? 6000));
+  const burstJitter = Math.max(0, Number(config.reply?.burstJitterMs ?? 400));
   const longGapProb = Math.max(0, Math.min(0.6, Number(config.reply?.longGapProbability ?? 0)));
   const longGapMin = Math.max(1000, Number(config.reply?.longGapMinMs ?? 3000));
   const longGapMax = Math.max(longGapMin, Number(config.reply?.longGapMaxMs ?? 5500));
   let lastMsgId = '';
 
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0 && useTypingDelay) {
+    if (i === 0) {
+      if (useTypingDelay && firstMax > 0) {
+        const firstDelay = firstMin + Math.floor(Math.random() * (firstMax - firstMin + 1));
+        if (firstDelay > 0) {
+          await sleepInterruptible(firstDelay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
+        }
+      }
+    } else if (useTypingDelay) {
       const isLongGap = longGapProb > 0 && Math.random() < longGapProb;
+      const rawBurst =
+        burstBase + parts[i].length * burstPerChar + Math.floor(Math.random() * (burstJitter + 1));
       const delay = isLongGap
         ? longGapMin + Math.floor(Math.random() * Math.max(1, longGapMax - longGapMin))
-        : Math.min(2800, 700 + parts[i].length * 35 + Math.floor(Math.random() * 400));
-      await sleepInterruptible(delay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
+        : Math.min(burstMax, rawBurst);
+      if (delay > 0) {
+        await sleepInterruptible(delay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
+      }
     }
 
     let res;

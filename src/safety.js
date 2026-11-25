@@ -180,8 +180,8 @@ export function ensureRateLimitFile(filePath = getDefaultStatePath()) {
  * 创建统一风控守卫实例
  */
 export function createSafetyGuard(safetyConfig = {}, { statePath = getDefaultStatePath(), extraSecrets = [], log = () => {} } = {}) {
-  const minGlobalSendGapMs = Math.max(0, Number(safetyConfig.minGlobalSendGapMs ?? 1000));
-  const rawMaxGlobalSendGapMs = Math.max(0, Number(safetyConfig.maxGlobalSendGapMs ?? 3000));
+  const minGlobalSendGapMs = Math.max(0, Number(safetyConfig.minGlobalSendGapMs ?? 800));
+  const rawMaxGlobalSendGapMs = Math.max(0, Number(safetyConfig.maxGlobalSendGapMs ?? 1200));
   const maxGlobalSendGapMs = rawMaxGlobalSendGapMs > minGlobalSendGapMs ? rawMaxGlobalSendGapMs : minGlobalSendGapMs;
 
   const cfg = {

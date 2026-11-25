@@ -116,20 +116,26 @@
   },
 
   "reply": {
-    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大聊天消息气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880); typingDelay=false 时由下方 safety 的随机发包间隔(默认1~3秒)统一控制每次回复/气泡间距，避免双重等待; 如需开启按字数停顿与随机长停顿可将 typingDelay 改为 true 并设置 longGapProbability",
+    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大聊天消息气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880); typingDelay=开启拟人回复延迟; firstReplyMinMs~MaxMs=首句回复随机延迟(默认1~3秒); burstBaseMs+字数*burstPerCharMs(+0~burstJitterMs,封顶burstMaxMs)=后续多条气泡按字数打字停顿(默认1s+字数*0.15s,封顶6秒,对方插话自动提前收尾); longGapProbability=可选额外随机长停顿概率(默认0关闭)",
     "maxBurstParts": 4,
     "maxImageBytes": 5242880,
-    "typingDelay": false,
+    "typingDelay": true,
+    "firstReplyMinMs": 1000,
+    "firstReplyMaxMs": 3000,
+    "burstBaseMs": 1000,
+    "burstPerCharMs": 150,
+    "burstMaxMs": 6000,
+    "burstJitterMs": 400,
     "longGapProbability": 0,
     "longGapMinMs": 3000,
     "longGapMaxMs": 5500
   },
 
   "safety": {
-    "_comment": "【9.5. 统一风控护栏（src/safety.js，限流时间戳持久化至 state/rate-limit.json）】enabled=总开关; minGlobalSendGapMs~maxGlobalSendGapMs=全局发包随机间隔毫秒区间(默认1000~3000ms，填相同值或max=0则为固定间距); maxSendPerMinute/Hour=单会话每分钟/每小时发信上限(默认0不限，按需开启); globalMaxSendPerMinute/Hour=全账号每分钟/每小时发信上限(默认0不限分钟、每小时200条，预占+失败回滚); maxMessageChars=单条文本字数上限(默认500,回复超长会自动按标点切分); sensitiveCheck=外发敏感信息审计(拦截本机路径/凭据赋值/已配置密钥原文,不误杀图片表情MD5); wakeLimit=分场景唤醒限流(默认关闭,开启后可按群插话/群显式触发/私聊独立控频); retcodeGuard=OneBot返回retcode非0连续达到阈值后自动冷却熔断",
+    "_comment": "【9.5. 统一风控护栏（src/safety.js，限流时间戳持久化至 state/rate-limit.json）】enabled=总开关; minGlobalSendGapMs~maxGlobalSendGapMs=全局轻量防撞发包随机间距(默认800~1200ms，不阻塞单会话打字停顿); maxSendPerMinute/Hour=单会话每分钟/每小时发信上限(默认0不限，按需开启); globalMaxSendPerMinute/Hour=全账号每分钟/每小时发信上限(默认0不限分钟、每小时200条，预占+失败回滚); maxMessageChars=单条文本字数上限(默认500,回复超长会自动按标点切分); sensitiveCheck=外发敏感信息审计(拦截本机路径/凭据赋值/已配置密钥原文,不误杀图片表情MD5); wakeLimit=分场景唤醒限流(默认关闭,开启后可按群插话/群显式触发/私聊独立控频); retcodeGuard=OneBot返回retcode非0连续达到阈值后自动冷却熔断",
     "enabled": true,
-    "minGlobalSendGapMs": 1000,
-    "maxGlobalSendGapMs": 3000,
+    "minGlobalSendGapMs": 800,
+    "maxGlobalSendGapMs": 1200,
     "maxSendPerMinute": 0,
     "maxSendPerHour": 0,
     "globalMaxSendPerMinute": 0,
