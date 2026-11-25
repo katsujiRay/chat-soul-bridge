@@ -434,13 +434,14 @@ async function sendReply(event, text) {
     event.message_type === 'group' ? `group:${event.group_id}` : `private:${event.user_id}`;
   const botName = getPersona().name;
   const startSeq = chatIncomingSeq.get(chatKey) || 0;
-  const longGapProb = Math.max(0, Math.min(0.6, Number(config.reply?.longGapProbability ?? 0.12)));
+  const useTypingDelay = config.reply?.typingDelay !== false;
+  const longGapProb = Math.max(0, Math.min(0.6, Number(config.reply?.longGapProbability ?? 0)));
   const longGapMin = Math.max(1000, Number(config.reply?.longGapMinMs ?? 3000));
   const longGapMax = Math.max(longGapMin, Number(config.reply?.longGapMaxMs ?? 5500));
   let lastMsgId = '';
 
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) {
+    if (i > 0 && useTypingDelay) {
       const isLongGap = longGapProb > 0 && Math.random() < longGapProb;
       const delay = isLongGap
         ? longGapMin + Math.floor(Math.random() * Math.max(1, longGapMax - longGapMin))
@@ -1735,8 +1736,14 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   });
 }
 if (safetyGuard.config.enabled) {
+  const sc = safetyGuard.config;
+  const fmtLimit = (n, unit) => (n > 0 ? `${n}/${unit}` : `不限/${unit}`);
+  const gapDesc =
+    sc.maxGlobalSendGapMs > sc.minGlobalSendGapMs
+      ? `${sc.minGlobalSendGapMs}~${sc.maxGlobalSendGapMs}ms(随机)`
+      : `${sc.minGlobalSendGapMs}ms`;
   log(
-    `风控护栏已启用: 单会话 ${safetyGuard.config.maxSendPerMinute}/分 ${safetyGuard.config.maxSendPerHour}/时 | 全局 ${safetyGuard.config.globalMaxSendPerMinute}/分 ${safetyGuard.config.globalMaxSendPerHour}/时 | 最小发包间距 ${safetyGuard.config.minGlobalSendGapMs}ms | 单条上限 ${safetyGuard.config.maxMessageChars}字`
+    `风控护栏已启用: 单会话 ${fmtLimit(sc.maxSendPerMinute, '分')} ${fmtLimit(sc.maxSendPerHour, '时')} | 全局 ${fmtLimit(sc.globalMaxSendPerMinute, '分')} ${fmtLimit(sc.globalMaxSendPerHour, '时')} | 发包间距 ${gapDesc} | 唤醒限流 ${sc.wakeLimit?.enabled ? '开' : '关'} | 单条上限 ${sc.maxMessageChars}字`
   );
 }
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);

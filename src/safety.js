@@ -180,17 +180,22 @@ export function ensureRateLimitFile(filePath = getDefaultStatePath()) {
  * 创建统一风控守卫实例
  */
 export function createSafetyGuard(safetyConfig = {}, { statePath = getDefaultStatePath(), extraSecrets = [], log = () => {} } = {}) {
+  const minGlobalSendGapMs = Math.max(0, Number(safetyConfig.minGlobalSendGapMs ?? 1000));
+  const rawMaxGlobalSendGapMs = Math.max(0, Number(safetyConfig.maxGlobalSendGapMs ?? 3000));
+  const maxGlobalSendGapMs = rawMaxGlobalSendGapMs > minGlobalSendGapMs ? rawMaxGlobalSendGapMs : minGlobalSendGapMs;
+
   const cfg = {
     enabled: safetyConfig.enabled !== false,
-    minGlobalSendGapMs: Math.max(0, Number(safetyConfig.minGlobalSendGapMs ?? 350)),
-    maxSendPerMinute: Math.max(0, Number(safetyConfig.maxSendPerMinute ?? 8)),
-    maxSendPerHour: Math.max(0, Number(safetyConfig.maxSendPerHour ?? 60)),
-    globalMaxSendPerMinute: Math.max(0, Number(safetyConfig.globalMaxSendPerMinute ?? 18)),
-    globalMaxSendPerHour: Math.max(0, Number(safetyConfig.globalMaxSendPerHour ?? 120)),
+    minGlobalSendGapMs,
+    maxGlobalSendGapMs,
+    maxSendPerMinute: Math.max(0, Number(safetyConfig.maxSendPerMinute ?? 0)),
+    maxSendPerHour: Math.max(0, Number(safetyConfig.maxSendPerHour ?? 0)),
+    globalMaxSendPerMinute: Math.max(0, Number(safetyConfig.globalMaxSendPerMinute ?? 0)),
+    globalMaxSendPerHour: Math.max(0, Number(safetyConfig.globalMaxSendPerHour ?? 200)),
     maxMessageChars: Math.max(0, Number(safetyConfig.maxMessageChars ?? 500)),
     sensitiveCheck: safetyConfig.sensitiveCheck !== false,
     wakeLimit: {
-      enabled: safetyConfig.wakeLimit?.enabled !== false,
+      enabled: safetyConfig.wakeLimit?.enabled === true,
       groupAutoPerMinute: Math.max(0, Number(safetyConfig.wakeLimit?.groupAutoPerMinute ?? 2)),
       groupAutoPerHour: Math.max(0, Number(safetyConfig.wakeLimit?.groupAutoPerHour ?? 18)),
       groupMentionPerMinute: Math.max(0, Number(safetyConfig.wakeLimit?.groupMentionPerMinute ?? 5)),
@@ -294,9 +299,14 @@ export function createSafetyGuard(safetyConfig = {}, { statePath = getDefaultSta
 
   const enqueueGlobalSend = (fn) => {
     const run = async () => {
-      if (cfg.enabled && cfg.minGlobalSendGapMs > 0 && lastGlobalSendAt > 0) {
+      if (cfg.enabled && cfg.maxGlobalSendGapMs > 0 && lastGlobalSendAt > 0) {
+        const targetGap =
+          cfg.maxGlobalSendGapMs > cfg.minGlobalSendGapMs
+            ? cfg.minGlobalSendGapMs +
+              Math.floor(Math.random() * (cfg.maxGlobalSendGapMs - cfg.minGlobalSendGapMs + 1))
+            : cfg.minGlobalSendGapMs;
         const elapsed = Date.now() - lastGlobalSendAt;
-        const waitMs = cfg.minGlobalSendGapMs - elapsed;
+        const waitMs = targetGap - elapsed;
         if (waitMs > 0) {
           await new Promise((r) => setTimeout(r, waitMs));
         }
