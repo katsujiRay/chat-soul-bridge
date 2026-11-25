@@ -793,6 +793,7 @@ export function createToolExecutor({
   forwardConfig = {},
   getBotName = () => 'Bot',
   getReferencePath = () => '',
+  onMessageSent = null,
 }) {
   const trustedSet = new Set(trustedGroups.map(String));
   const privateMemSet = new Set(privateMemoryGroups.map(String));
@@ -937,10 +938,12 @@ export function createToolExecutor({
             res = await sendOneBot('send_private_msg', { user_id: event.user_id, message: segments });
           }
           markDirectSent?.(text);
+          onMessageSent?.(res);
+          const selfUid = event.self_id || botId || 0;
           recordRecentMessage(chatKey, {
             message_id: String(res?.data?.message_id || 'self'),
             time: formatNow().slice(11, 16),
-            user_id: String(event.self_id || ''),
+            user_id: String(selfUid || ''),
             sender: `${getBotName()}(我)`,
             text: text.slice(0, 120),
           });
@@ -948,7 +951,7 @@ export function createToolExecutor({
             scope: event.message_type === 'group' ? 'group' : 'private',
             groupId: event.message_type === 'group' ? event.group_id : null,
             messageId: String(res?.data?.message_id || ''),
-            who: event.self_id || 0,
+            who: selfUid,
             whoName: getBotName(),
             isSelf: true,
             isOwner: false,
@@ -971,11 +974,13 @@ export function createToolExecutor({
           }
           lastDmOwnerAt = Date.now();
           const res = await sendOneBot('send_private_msg', { user_id: Number(ownerId), message: text });
+          onMessageSent?.(res);
           const privKey = `private:${ownerId}`;
+          const selfUid = event?.self_id || botId || 0;
           recordRecentMessage(privKey, {
             message_id: String(res?.data?.message_id || 'self'),
             time: formatNow().slice(11, 16),
-            user_id: String(event?.self_id || ''),
+            user_id: String(selfUid || ''),
             sender: `${getBotName()}(我)`,
             text: text.slice(0, 120),
           });
@@ -983,7 +988,7 @@ export function createToolExecutor({
             scope: 'private',
             groupId: null,
             messageId: String(res?.data?.message_id || ''),
-            who: event?.self_id || 0,
+            who: selfUid,
             whoName: getBotName(),
             isSelf: true,
             isOwner: false,
@@ -1010,11 +1015,13 @@ export function createToolExecutor({
             return { ok: false, error: `群 ${targetGroup} 在黑名单里，拒绝发送` };
           }
           const res = await sendOneBot('send_group_msg', { group_id: targetGroup, message: text });
+          onMessageSent?.(res);
           const grpKey = `group:${targetGroup}`;
+          const selfUid = event?.self_id || botId || 0;
           recordRecentMessage(grpKey, {
             message_id: String(res?.data?.message_id || 'self'),
             time: formatNow().slice(11, 16),
-            user_id: String(event?.self_id || ''),
+            user_id: String(selfUid || ''),
             sender: `${getBotName()}(我)`,
             text: text.slice(0, 120),
           });
@@ -1022,7 +1029,7 @@ export function createToolExecutor({
             scope: 'group',
             groupId: targetGroup,
             messageId: String(res?.data?.message_id || ''),
-            who: event?.self_id || 0,
+            who: selfUid,
             whoName: getBotName(),
             isSelf: true,
             isOwner: false,

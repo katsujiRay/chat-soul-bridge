@@ -209,6 +209,7 @@ const executeTool = createToolExecutor({
   forwardConfig: config.forward,
   getBotName: () => getPersona().name,
   getReferencePath: () => getPersona().referencePath,
+  onMessageSent: (res) => rememberMyMessageId(res),
 });
 
 // 解析 config.json 中的 "${ENV_VAR}" 占位符，同时支持直接明文填写和 .env 环境变量回退
@@ -768,8 +769,8 @@ function computeGroupTopicHeat(chatKey, currentText) {
 }
 
 /**
- * 群聊唤醒判定：依次检查防多 Bot 死循环护栏 -> @ -> 引用回复 -> 人设关键词 -> 管理员优先/话题热度/普通群友概率。
- * 返回 { reason, matchedTopics } 或 null（不回复）。
+ * 群聊唤醒判定：依次检查防多 Bot 死循环护栏 -> @ -> 引用回复 -> 人设关键词 -> 管理员优先/短时续聊窗口/话题热度/普通群友概率。
+ * 返回 { reason, matchedTopics, skipReason }（reason 为 null 表示仅入库不回复）。
  */
 function checkGroupTrigger(
   groupId,
@@ -795,30 +796,30 @@ function checkGroupTrigger(
 
   // 防双 AI 互刷：同群其他 AI 伙伴连续触发达上限后直接熔断
   if (isKnownBot && currentStreak >= maxStreak) {
-    return null;
+    return { reason: null, matchedTopics: [], skipReason: `AI连聊达上限(${currentStreak}/${maxStreak})` };
   }
 
   // 显式 @ 提及：人类群友随时可唤醒（并清零无主人连聊计数防外群误锁），已知 AI 伙伴计入连聊上限
   if (config.groupTrigger?.atMention !== false && isAtMe) {
     nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
-    return { reason: 'at', matchedTopics: [] };
+    return { reason: 'at', matchedTopics: [], skipReason: '' };
   }
 
   if (config.groupTrigger?.replyToMe !== false && replyId && myMessageIds.has(String(replyId))) {
     nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
-    return { reason: 'reply', matchedTopics: [] };
+    return { reason: 'reply', matchedTopics: [], skipReason: '' };
   }
 
-  // 非显式触发（关键词 / 话题 / 随机插话）：无主人参与时连续接话达上限则暂停
+  // 非显式触发（关键词 / 话题 / 续聊 / 随机插话）：无主人参与时连续接话达上限则暂停
   if (!isOwner && currentStreak >= maxStreak) {
-    return null;
+    return { reason: null, matchedTopics: [], skipReason: `无主人连聊达上限(${currentStreak}/${maxStreak})` };
   }
 
   const keywords = [...new Set([...(getPersona().keywords || []), ...(config.groupTrigger?.keywords || [])])];
   const lower = text.toLowerCase();
   if (keywords.some((kw) => kw && lower.includes(String(kw).toLowerCase()))) {
     if (!isOwner) nonOwnerStreak.set(gKey, currentStreak + 1);
-    return { reason: 'keyword', matchedTopics: [] };
+    return { reason: 'keyword', matchedTopics: [], skipReason: '' };
   }
 
   // 计算角色兴趣话题热度加成（0 延迟、0 API 消耗）
@@ -826,48 +827,83 @@ function checkGroupTrigger(
   const topicBoostStep = Number(config.groupTrigger?.topicBoostStep ?? 0.25);
   const topicMaxBoost = Number(config.groupTrigger?.topicMaxBoost ?? 0.45);
   const topicBoost = heat > 0 ? Math.min(topicMaxBoost, heat * topicBoostStep) : 0;
+  const now = Date.now();
+  const sinceBotReply = now - (lastGroupBotReplyAt.get(gKey) || 0);
 
   // 管理员发言专属通道：更高唤醒概率 + 更短独立冷却 + 刚聊过天时的连聊窗口加成 + 话题热度加成
   if (isOwner) {
     const baseOwnerProb = Number(
       config.groupTrigger?.ownerRandomReplyProbability ??
         config.groupTrigger?.randomReplyProbability ??
-        0.55
+        0.75
     );
-    if (baseOwnerProb > 0 && (text.length >= 1 || hasImage)) {
-      const ownerCooldownMs = Number(config.groupTrigger?.ownerReplyCooldownMs ?? 10000);
-      const followupWindowMs = Number(config.groupTrigger?.ownerFollowupWindowMs ?? 90000);
-      const now = Date.now();
-      const inFollowup =
-        followupWindowMs > 0 && now - (lastGroupBotReplyAt.get(gKey) || 0) <= followupWindowMs;
-      const prob = Math.min(0.95, baseOwnerProb + (inFollowup ? 0.25 : 0) + topicBoost);
-      const last = lastOwnerRandomReplyAt.get(gKey) || 0;
-      if (now - last >= ownerCooldownMs && Math.random() < prob) {
-        lastOwnerRandomReplyAt.set(gKey, now);
-        const reason = topicBoost > 0 ? 'owner_topic' : inFollowup ? 'owner_followup' : 'owner_random';
-        return { reason, matchedTopics: matchedWords };
-      }
+    if (baseOwnerProb <= 0) {
+      return { reason: null, matchedTopics: matchedWords, skipReason: '管理员随机回复已关闭' };
     }
-    return null;
+    if (text.length < 1 && !hasImage) {
+      return { reason: null, matchedTopics: matchedWords, skipReason: '消息内容为空' };
+    }
+    const ownerCooldownMs = Number(config.groupTrigger?.ownerReplyCooldownMs ?? 10000);
+    const followupWindowMs = Number(config.groupTrigger?.ownerFollowupWindowMs ?? 90000);
+    const inFollowup = followupWindowMs > 0 && sinceBotReply <= followupWindowMs;
+    const prob = Math.min(0.95, baseOwnerProb + (inFollowup ? 0.2 : 0) + topicBoost);
+    const last = lastOwnerRandomReplyAt.get(gKey) || 0;
+    if (now - last < ownerCooldownMs) {
+      const remainSec = Math.max(1, Math.ceil((ownerCooldownMs - (now - last)) / 1000));
+      return { reason: null, matchedTopics: matchedWords, skipReason: `管理员冷却中(剩${remainSec}s)` };
+    }
+    if (Math.random() < prob) {
+      lastOwnerRandomReplyAt.set(gKey, now);
+      const reason = topicBoost > 0 ? 'owner_topic' : inFollowup ? 'owner_followup' : 'owner_random';
+      return { reason, matchedTopics: matchedWords, skipReason: '' };
+    }
+    return {
+      reason: null,
+      matchedTopics: matchedWords,
+      skipReason: `管理员${inFollowup ? '续聊' : '随机'}概率未中(${Math.round(prob * 100)}%)`,
+    };
   }
 
-  // 非管理员：区分“已知同群 AI 伙伴”（低概率防互刷）与“普通人类群友”（默认 30% + 话题热度加成）
+  // 非管理员：区分“已知同群 AI 伙伴”与“普通人类群友”，并支持刚回完话的短时续聊窗口加成（仍受无主人连聊上限兜底）
   const baseProb = isKnownBot
     ? Number(config.groupTrigger?.botRandomReplyProbability ?? 0.15)
     : Number(config.groupTrigger?.randomReplyProbability ?? 0.3);
-  const prob = isKnownBot
-    ? Math.min(0.6, baseProb + topicBoost * 0.5)
-    : Math.min(0.8, baseProb + topicBoost);
-  const cooldownMs = Number(config.groupTrigger?.randomReplyCooldownMs ?? 30000);
-  if (prob > 0 && (text.length >= 2 || (topicBoost > 0 && text.length >= 1))) {
-    const last = lastRandomReplyAt.get(gKey) || 0;
-    if (Date.now() - last >= cooldownMs && Math.random() < prob) {
-      lastRandomReplyAt.set(gKey, Date.now());
-      nonOwnerStreak.set(gKey, currentStreak + 1);
-      return { reason: topicBoost > 0 ? 'topic' : 'random', matchedTopics: matchedWords };
-    }
+  if (baseProb <= 0) {
+    return { reason: null, matchedTopics: matchedWords, skipReason: isKnownBot ? 'AI随机接话已关闭' : '随机插话已关闭' };
   }
-  return null;
+  const followupWindowMs = Number(config.groupTrigger?.followupWindowMs ?? 60000);
+  const inFollowup = followupWindowMs > 0 && sinceBotReply <= followupWindowMs;
+  const followupBoost = inFollowup ? Math.max(0, Number(config.groupTrigger?.followupBoost ?? 0.35)) : 0;
+  const prob = isKnownBot
+    ? Math.min(0.65, baseProb + followupBoost + topicBoost * 0.5)
+    : Math.min(0.85, baseProb + followupBoost + topicBoost);
+  const baseCooldownMs = Number(config.groupTrigger?.randomReplyCooldownMs ?? 30000);
+  const followupCooldownMs = Number(config.groupTrigger?.followupCooldownMs ?? 8000);
+  const effectiveCooldownMs = inFollowup ? Math.min(baseCooldownMs, followupCooldownMs) : baseCooldownMs;
+
+  if (!(text.length >= 2 || ((topicBoost > 0 || inFollowup) && text.length >= 1))) {
+    return { reason: null, matchedTopics: matchedWords, skipReason: '消息过短' };
+  }
+  const last = lastRandomReplyAt.get(gKey) || 0;
+  if (now - last < effectiveCooldownMs) {
+    const remainSec = Math.max(1, Math.ceil((effectiveCooldownMs - (now - last)) / 1000));
+    return {
+      reason: null,
+      matchedTopics: matchedWords,
+      skipReason: `${isKnownBot ? 'AI' : '群'}${inFollowup ? '续聊' : '随机'}冷却中(剩${remainSec}s)`,
+    };
+  }
+  if (Math.random() < prob) {
+    lastRandomReplyAt.set(gKey, now);
+    nonOwnerStreak.set(gKey, currentStreak + 1);
+    const reason = topicBoost > 0 ? 'topic' : inFollowup ? 'followup' : 'random';
+    return { reason, matchedTopics: matchedWords, skipReason: '' };
+  }
+  return {
+    reason: null,
+    matchedTopics: matchedWords,
+    skipReason: `${isKnownBot ? 'AI' : '群友'}${inFollowup ? '续聊' : '随机'}概率未中(${Math.round(prob * 100)}%)`,
+  };
 }
 
 // ── 主动找你聊（定时冷场检查） ───────────────────────────────────────────────
@@ -1277,6 +1313,7 @@ async function handleMessage(event) {
 
   let triggerReason = 'private';
   let matchedTopics = [];
+  let skipReason = '';
   let quotedMessage;
   if (event.message_type === 'group') {
     const triggerRes = checkGroupTrigger(
@@ -1291,11 +1328,13 @@ async function handleMessage(event) {
     );
     triggerReason = triggerRes?.reason || null;
     matchedTopics = triggerRes?.matchedTopics || [];
+    skipReason = triggerRes?.skipReason || '';
     // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒
     if (!triggerReason && replyId && config.groupTrigger?.replyToMe !== false) {
       const selfId = String(event.self_id || config.snowluma.botId || '');
+      const isOwnerSender = Boolean(config.ownerId) && String(event.user_id) === String(config.ownerId);
       const isKnownBot =
-        String(event.user_id) !== String(config.ownerId || '') &&
+        !isOwnerSender &&
         (speaker?.isAiBot === true || (speaker?.role === 'known' && /(ai|bot|机器人)/i.test(String(speaker.tag || ''))));
       const maxStreak = Number(config.groupTrigger?.maxConsecutiveWithoutOwner ?? 2);
       const streak = nonOwnerStreak.get(String(event.group_id)) || 0;
@@ -1303,6 +1342,8 @@ async function handleMessage(event) {
         quotedMessage = await resolveQuotedMessage(chatKey, replyId);
         if (quotedMessage && selfId && quotedMessage.userId === selfId) {
           triggerReason = 'reply';
+          skipReason = '';
+          nonOwnerStreak.set(String(event.group_id), isKnownBot ? streak + 1 : 0);
         }
       }
     }
@@ -1326,6 +1367,10 @@ async function handleMessage(event) {
   }
 
   if (event.message_type === 'group' && !triggerReason) {
+    if (config.groupTrigger?.logSkipped !== false) {
+      const preview = (recentRecordText || fallbackRecordText || '').replace(/\s+/g, ' ').slice(0, 50);
+      log(`已入库 ${chatKey} (${senderName}, 未触发: ${skipReason || '未命中规则'}): ${preview}`);
+    }
     return;
   }
 
@@ -1344,7 +1389,7 @@ async function handleMessage(event) {
   const wakeCategory =
     event.message_type === 'private'
       ? 'private'
-      : ['at', 'reply', 'name'].includes(triggerReason)
+      : ['at', 'reply', 'name', 'keyword'].includes(triggerReason)
         ? 'group_mention'
         : 'group_auto';
   const wakeCheck = safetyGuard.checkAndRecordWake(chatKey, wakeCategory);
@@ -1391,6 +1436,8 @@ async function handleMessage(event) {
         }
         if (triggerReason === 'random') {
           contextPrefix += '\n（提示：没人特意叫你，你是路过觉得好玩顺嘴插一句，简短自然即可）';
+        } else if (triggerReason === 'followup') {
+          contextPrefix += '\n（提示：你刚才正在群里聊着天，对方紧接着搭话了，顺着刚才的话茬自然接一句即可，简短自然）';
         } else if (triggerReason === 'topic' || triggerReason === 'owner_topic') {
           const topicStr = matchedTopics.slice(0, 3).join('、');
           contextPrefix += `\n（提示：群里正好聊到你很感兴趣的话题${topicStr ? `「${topicStr}」` : ''}，顺嘴凑过去插一句，简短自然即可）`;
@@ -1758,8 +1805,12 @@ function connectSnowLuma() {
   ws.addEventListener('message', (msg) => {
     try {
       const data = JSON.parse(String(msg.data));
-      handleMessage(data);
-    } catch {}
+      Promise.resolve(handleMessage(data)).catch((err) => {
+        log('处理 WebSocket 消息事件异常:', err?.message || err);
+      });
+    } catch (err) {
+      log('解析 WebSocket 消息 JSON 失败:', err?.message || err);
+    }
   });
 
   ws.addEventListener('close', (ev) => {
