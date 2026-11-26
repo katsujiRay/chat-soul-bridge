@@ -850,6 +850,8 @@ const lastGroupBotReplyAt = new Map();
 const lastGroupBotReplyText = new Map();
 const lastSemanticJudgeAt = new Map();
 const nonOwnerStreak = new Map();
+const lastNonOwnerTriggerAt = new Map();
+const activeGroupReplyCount = new Map();
 
 const ECHO_STOPWORDS = new Set([
   '什么', '怎么', '怎样', '还是', '就是', '不是', '已经', '因为', '所以', '但是', '不过', '其实',
@@ -1021,46 +1023,66 @@ function checkGroupTrigger(
   mentionedUserIds = []
 ) {
   const gKey = String(groupId);
+  const now = Date.now();
   const isOwner = Boolean(config.ownerId) && String(senderId) === String(config.ownerId);
   const isKnownBot =
     !isOwner &&
     (speaker?.isAiBot === true || (speaker?.role === 'known' && /(ai|bot|机器人)/i.test(String(speaker.tag || ''))));
   const maxStreak = Number(config.groupTrigger?.maxConsecutiveWithoutOwner ?? 2);
+  const resetMs = Math.max(0, Number(config.groupTrigger?.nonOwnerStreakResetMs ?? 0));
+  if (resetMs > 0 && (nonOwnerStreak.get(gKey) || 0) > 0) {
+    const lastTrig = lastNonOwnerTriggerAt.get(gKey) || 0;
+    if (lastTrig > 0 && now - lastTrig >= resetMs) {
+      nonOwnerStreak.set(gKey, 0);
+    }
+  }
   const currentStreak = nonOwnerStreak.get(gKey) || 0;
 
   if (isOwner) {
     nonOwnerStreak.set(gKey, 0);
   }
 
-  // 防双 AI 互刷：同群其他 AI 伙伴连续触发达上限后直接熔断
-  if (isKnownBot && currentStreak >= maxStreak) {
-    return { reason: null, matchedTopics: [], skipReason: `AI连聊达上限(${currentStreak}/${maxStreak})` };
+  // 硬上限熔断：无主人参与时连续接话达上限，所有非主人消息（含引用回复与未登记的外部 Bot）一律暂停，绝不因他人引用/@清零计数
+  if (!isOwner && currentStreak >= maxStreak) {
+    return {
+      reason: null,
+      matchedTopics: [],
+      skipReason: `${isKnownBot ? 'AI' : '无主人'}连聊达上限(${currentStreak}/${maxStreak})`,
+    };
   }
 
-  // 显式 @ 提及：人类群友随时可唤醒（并清零无主人连聊计数防外群误锁），已知 AI 伙伴计入连聊上限
+  // 防群聊队列积压：本群已有回复正在思考或慢节奏发送中时，不再把后续非主人消息堆进队列（避免几十秒后吐出陈年引用回复）
+  if (!isOwner && (activeGroupReplyCount.get(gKey) || 0) > 0) {
+    return { reason: null, matchedTopics: [], skipReason: '群聊回复进行中，跳过排队积压' };
+  }
+
+  // 显式 @ 提及与引用回复：均计入无主人连聊轮数（仅主人发话可清零）
   if (config.groupTrigger?.atMention !== false && isAtMe) {
-    nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
+    if (!isOwner) {
+      nonOwnerStreak.set(gKey, currentStreak + 1);
+      lastNonOwnerTriggerAt.set(gKey, now);
+    }
     return { reason: 'at', matchedTopics: [], skipReason: '' };
   }
 
   if (config.groupTrigger?.replyToMe !== false && replyId && myMessageIds.has(String(replyId))) {
-    nonOwnerStreak.set(gKey, isKnownBot ? currentStreak + 1 : 0);
+    if (!isOwner) {
+      nonOwnerStreak.set(gKey, currentStreak + 1);
+      lastNonOwnerTriggerAt.set(gKey, now);
+    }
     return { reason: 'reply', matchedTopics: [], skipReason: '' };
-  }
-
-  // 非显式触发（关键词 / 回声 / 话题 / 续聊 / 随机插话）：无主人参与时连续接话达上限则暂停
-  if (!isOwner && currentStreak >= maxStreak) {
-    return { reason: null, matchedTopics: [], skipReason: `无主人连聊达上限(${currentStreak}/${maxStreak})` };
   }
 
   const keywords = [...new Set([...(getPersona().keywords || []), ...(config.groupTrigger?.keywords || [])])];
   const lower = text.toLowerCase();
   if (keywords.some((kw) => kw && lower.includes(String(kw).toLowerCase()))) {
-    if (!isOwner) nonOwnerStreak.set(gKey, currentStreak + 1);
+    if (!isOwner) {
+      nonOwnerStreak.set(gKey, currentStreak + 1);
+      lastNonOwnerTriggerAt.set(gKey, now);
+    }
     return { reason: 'keyword', matchedTopics: [], skipReason: '' };
   }
 
-  const now = Date.now();
   const lastBotReply = lastGroupBotReplyAt.get(gKey) || 0;
   const sinceBotReply = lastBotReply > 0 ? now - lastBotReply : Infinity;
   const followupWindowMs = Number(config.groupTrigger?.followupWindowMs ?? 60000);
@@ -1077,6 +1099,7 @@ function checkGroupTrigger(
       } else {
         lastRandomReplyAt.set(gKey, now);
         nonOwnerStreak.set(gKey, currentStreak + 1);
+        lastNonOwnerTriggerAt.set(gKey, now);
       }
       return { reason: directSig.reason, matchedTopics: [], skipReason: '', directDetail: directSig.detail };
     }
@@ -1164,6 +1187,7 @@ function checkGroupTrigger(
   if (Math.random() < prob) {
     lastRandomReplyAt.set(gKey, now);
     nonOwnerStreak.set(gKey, currentStreak + 1);
+    lastNonOwnerTriggerAt.set(gKey, now);
     const reason = topicBoost > 0 ? 'topic' : inFollowup ? 'followup' : 'random';
     return { reason, matchedTopics: matchedWords, skipReason: '' };
   }
@@ -1663,21 +1687,23 @@ async function handleMessage(event) {
     matchedTopics = triggerRes?.matchedTopics || [];
     skipReason = triggerRes?.skipReason || '';
     directDetail = triggerRes?.directDetail || '';
-    // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒
+    // 兜底：若群友引用的是机器人重启前发的旧消息（不在内存 myMessageIds 中），通过 get_msg 识别并唤醒（同样严格受连聊上限与队列积压约束）
     if (!triggerReason && replyId && config.groupTrigger?.replyToMe !== false) {
+      const gKey = String(event.group_id);
       const selfId = String(event.self_id || config.snowluma.botId || '');
       const isOwnerSender = Boolean(config.ownerId) && String(event.user_id) === String(config.ownerId);
-      const isKnownBot =
-        !isOwnerSender &&
-        (speaker?.isAiBot === true || (speaker?.role === 'known' && /(ai|bot|机器人)/i.test(String(speaker.tag || ''))));
       const maxStreak = Number(config.groupTrigger?.maxConsecutiveWithoutOwner ?? 2);
-      const streak = nonOwnerStreak.get(String(event.group_id)) || 0;
-      if (!isKnownBot || streak < maxStreak) {
+      const streak = nonOwnerStreak.get(gKey) || 0;
+      const busy = (activeGroupReplyCount.get(gKey) || 0) > 0;
+      if (isOwnerSender || (streak < maxStreak && !busy)) {
         quotedMessage = await resolveQuotedMessage(chatKey, replyId);
         if (quotedMessage && selfId && quotedMessage.userId === selfId) {
           triggerReason = 'reply';
           skipReason = '';
-          nonOwnerStreak.set(String(event.group_id), isKnownBot ? streak + 1 : 0);
+          if (!isOwnerSender) {
+            nonOwnerStreak.set(gKey, streak + 1);
+            lastNonOwnerTriggerAt.set(gKey, Date.now());
+          }
         }
       }
     }
@@ -1765,6 +1791,11 @@ async function handleMessage(event) {
   if (!wakeCheck.ok) {
     log(`[safety] 跳过本次唤醒 (${chatKey}, reason=${triggerReason}): ${wakeCheck.error}`);
     return;
+  }
+
+  const activeGroupKey = event.message_type === 'group' ? String(event.group_id) : '';
+  if (activeGroupKey) {
+    activeGroupReplyCount.set(activeGroupKey, (activeGroupReplyCount.get(activeGroupKey) || 0) + 1);
   }
 
   enqueue(chatKey, async () => {
@@ -2032,6 +2063,12 @@ async function handleMessage(event) {
       }
     } catch (err) {
       log(`处理消息失败 (${chatKey}):`, err?.message || err);
+    } finally {
+      if (activeGroupKey) {
+        const left = (activeGroupReplyCount.get(activeGroupKey) || 1) - 1;
+        if (left <= 0) activeGroupReplyCount.delete(activeGroupKey);
+        else activeGroupReplyCount.set(activeGroupKey, left);
+      }
     }
   });
 }

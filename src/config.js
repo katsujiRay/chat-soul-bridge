@@ -61,6 +61,7 @@ export const DEFAULT_CONFIG = {
     botRandomReplyProbability: 0.15,
     randomReplyCooldownMs: 30000,
     maxConsecutiveWithoutOwner: 2,
+    nonOwnerStreakResetMs: 0,
     logSkipped: true,
     semanticJudge: {
       enabled: true,
