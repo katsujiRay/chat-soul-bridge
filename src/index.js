@@ -552,15 +552,19 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
   const botName = getPersona().name;
   const startSeq = chatIncomingSeq.get(chatKey) || 0;
   const useTypingDelay = config.reply?.typingDelay !== false;
-  const firstMin = Math.max(0, Number(config.reply?.firstReplyMinMs ?? 1000));
-  const firstMax = Math.max(firstMin, Number(config.reply?.firstReplyMaxMs ?? 3000));
-  const burstBase = Math.max(0, Number(config.reply?.burstBaseMs ?? 1000));
-  const burstPerChar = Math.max(0, Number(config.reply?.burstPerCharMs ?? 150));
-  const burstMax = Math.max(burstBase, Number(config.reply?.burstMaxMs ?? 6000));
-  const burstJitter = Math.max(0, Number(config.reply?.burstJitterMs ?? 400));
+  const interruptibleTyping = config.reply?.interruptibleTyping === true;
+  const firstMin = Math.max(0, Number(config.reply?.firstReplyMinMs ?? 1500));
+  const firstMax = Math.max(firstMin, Number(config.reply?.firstReplyMaxMs ?? 3500));
+  const burstBase = Math.max(0, Number(config.reply?.burstBaseMs ?? 1500));
+  const burstPerChar = Math.max(0, Number(config.reply?.burstPerCharMs ?? 400));
+  const burstMax = Math.max(burstBase, Number(config.reply?.burstMaxMs ?? 12000));
+  const burstJitter = Math.max(0, Number(config.reply?.burstJitterMs ?? 600));
   const longGapProb = Math.max(0, Math.min(0.6, Number(config.reply?.longGapProbability ?? 0)));
   const longGapMin = Math.max(1000, Number(config.reply?.longGapMinMs ?? 3000));
   const longGapMax = Math.max(longGapMin, Number(config.reply?.longGapMaxMs ?? 5500));
+  const shouldInterruptTyping = interruptibleTyping
+    ? () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq
+    : null;
   let lastMsgId = '';
 
   for (let i = 0; i < parts.length; i++) {
@@ -568,7 +572,7 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
       if (useTypingDelay && firstMax > 0) {
         const firstDelay = firstMin + Math.floor(Math.random() * (firstMax - firstMin + 1));
         if (firstDelay > 0) {
-          await sleepInterruptible(firstDelay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
+          await sleepInterruptible(firstDelay, shouldInterruptTyping);
         }
       }
     } else if (useTypingDelay) {
@@ -579,7 +583,7 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
         ? longGapMin + Math.floor(Math.random() * Math.max(1, longGapMax - longGapMin))
         : Math.min(burstMax, rawBurst);
       if (delay > 0) {
-        await sleepInterruptible(delay, () => (chatIncomingSeq.get(chatKey) || 0) !== startSeq);
+        await sleepInterruptible(delay, shouldInterruptTyping);
       }
     }
 
@@ -2262,7 +2266,7 @@ if (safetyGuard.config.enabled) {
 if (config.reply?.typingDelay !== false) {
   const r = config.reply || {};
   log(
-    `回复节奏已启用: 首句随机 ${Number(r.firstReplyMinMs ?? 1000)}~${Number(r.firstReplyMaxMs ?? 3000)}ms | 后续气泡 ${Number(r.burstBaseMs ?? 1000)}ms+字数×${Number(r.burstPerCharMs ?? 150)}ms(+0~${Number(r.burstJitterMs ?? 400)}ms, 封顶${Number(r.burstMaxMs ?? 6000)}ms) | 最多拆分 ${Number(r.maxBurstParts ?? 4)} 条`
+    `回复节奏已启用: 首句随机 ${Number(r.firstReplyMinMs ?? 1500)}~${Number(r.firstReplyMaxMs ?? 3500)}ms | 后续气泡 ${Number(r.burstBaseMs ?? 1500)}ms+字数×${Number(r.burstPerCharMs ?? 400)}ms(+0~${Number(r.burstJitterMs ?? 600)}ms, 封顶${Number(r.burstMaxMs ?? 12000)}ms) | 插话打断 ${r.interruptibleTyping === true ? '开' : '关'} | 最多拆分 ${Number(r.maxBurstParts ?? 4)} 条`
   );
 }
 log(
