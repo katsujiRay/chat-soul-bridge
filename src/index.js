@@ -522,18 +522,31 @@ function splitBurstMessages(text, maxParts = 4, maxChars = 500) {
   return result;
 }
 
+/** 提取模型回复开头的轻量行内引用指令 [reply:msg_id] / [quote:msg_id]（支持负数 ID，全模型零额外轮次通用） */
+function extractInlineReplyDirective(raw) {
+  const str = String(raw || '');
+  const m = str.match(/^\s*\[(?:reply|quote)\s*[:=]\s*(-?\d+)\]\s*/i);
+  if (!m) return { replyToMessageId: '', text: str.trim() };
+  return {
+    replyToMessageId: m[1],
+    text: str.slice(m[0].length).trim(),
+  };
+}
+
 /**
  * 拟人化分条发送回复（条间按字数停顿 + 可配概率长停顿 + 逐条 try/catch 容错）：
  *   逐条按真实 OneBot message_id 写入 state/memory.db 与内存 recentBuffers，
  *   确保与离线同步拉取的群/私聊历史 1 对 1 精准去重，且引用任意一条气泡都能秒命中缓存。
  */
 async function sendReply(event, text, { replyToMessageId = '' } = {}) {
+  const parsed = extractInlineReplyDirective(text);
   const maxBurst = Math.max(1, Math.min(8, Number(config.reply?.maxBurstParts ?? 4)));
   const maxChars = Math.max(0, Number(config.safety?.maxMessageChars ?? 500));
-  const parts = splitBurstMessages(text, maxBurst, maxChars);
+  const parts = splitBurstMessages(parsed.text, maxBurst, maxChars);
   if (parts.length === 0) return '';
 
-  const replyIdStr = String(replyToMessageId || '').trim();
+  const rawReplyId = String(replyToMessageId || parsed.replyToMessageId || '').trim();
+  const replyIdStr = /^-?\d+$/.test(rawReplyId) ? rawReplyId : '';
   const chatKey =
     event.message_type === 'group' ? `group:${event.group_id}` : `private:${event.user_id}`;
   const botName = getPersona().name;
@@ -1586,7 +1599,8 @@ async function handleMessage(event) {
     event.message_type === 'private'
       ? `private:${event.user_id}`
       : `group:${event.group_id}`;
-  chatIncomingSeq.set(chatKey, (chatIncomingSeq.get(chatKey) || 0) + 1);
+  const incomingSeqAtReceive = (chatIncomingSeq.get(chatKey) || 0) + 1;
+  chatIncomingSeq.set(chatKey, incomingSeqAtReceive);
   const senderName = event.sender?.card || event.sender?.nickname || String(event.user_id);
   const impScope = resolveImpressionScope(event, {
     ownerId: config.ownerId,
@@ -1961,12 +1975,24 @@ async function handleMessage(event) {
       }
 
       if (reply && !directSent) {
-        await sendReply(event, reply);
-        if (event.message_type === 'group') {
-          lastGroupBotReplyAt.set(String(event.group_id), Date.now());
-          lastGroupBotReplyText.set(String(event.group_id), reply.slice(0, 300));
+        const inlineDirective = extractInlineReplyDirective(reply);
+        const cleanReplyText = inlineDirective.text;
+        if (cleanReplyText) {
+          const groupJumped =
+            event.message_type === 'group' &&
+            config.reply?.autoQuoteOnGroupJump !== false &&
+            event.message_id != null &&
+            (chatIncomingSeq.get(chatKey) || 0) > incomingSeqAtReceive;
+          const targetReplyId =
+            inlineDirective.replyToMessageId || (groupJumped ? String(event.message_id) : '');
+          await sendReply(event, cleanReplyText, { replyToMessageId: targetReplyId });
+          if (event.message_type === 'group') {
+            lastGroupBotReplyAt.set(String(event.group_id), Date.now());
+            lastGroupBotReplyText.set(String(event.group_id), cleanReplyText.slice(0, 300));
+          }
+          const quoteTag = targetReplyId ? ` [引用:${targetReplyId}]` : '';
+          log(`回复 ${chatKey}${quoteTag}: ${cleanReplyText.slice(0, 80)}${cleanReplyText.length > 80 ? '...' : ''}`);
         }
-        log(`回复 ${chatKey}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
       } else if (directSent && event.message_type === 'group') {
         lastGroupBotReplyAt.set(String(event.group_id), Date.now());
         if (toolContext.directSentText) {

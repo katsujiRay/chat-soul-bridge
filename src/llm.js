@@ -74,6 +74,11 @@ function normalizeProtocol(raw) {
   throw new Error(`不支持的协议类型 protocol="${raw}"，可选值：gemini / openai / anthropic / agy-cli`);
 }
 
+/** 剥离模型回复开头可能附带的轻量行内引用指令 [reply:msg_id] / [quote:msg_id]，避免污染短期上下文库 */
+export function stripInlineReplyTag(raw) {
+  return String(raw || '').replace(/^\s*\[(?:reply|quote)\s*[:=]\s*-?\d+\]\s*/i, '').trim();
+}
+
 /** 将本轮干净的文本问答写入本地 state/context.db（图片仅留占位说明，防止数据库膨胀） */
 function saveTurnToLocalContext(chatKey, text, images, replyText, toolContext, maxContextTurns) {
   const storedUserText =
@@ -83,10 +88,12 @@ function saveTurnToLocalContext(chatKey, text, images, replyText, toolContext, m
   if (storedUserLine) {
     appendContextTurn(chatKey, 'user', storedUserLine, maxContextTurns);
   }
-  if (replyText) {
-    appendContextTurn(chatKey, 'model', replyText, maxContextTurns);
+  const cleanReply = stripInlineReplyTag(replyText);
+  if (cleanReply) {
+    appendContextTurn(chatKey, 'model', cleanReply, maxContextTurns);
   } else if (toolContext?.directSentText) {
-    appendContextTurn(chatKey, 'model', toolContext.directSentText, maxContextTurns);
+    const cleanDirect = stripInlineReplyTag(toolContext.directSentText);
+    if (cleanDirect) appendContextTurn(chatKey, 'model', cleanDirect, maxContextTurns);
   }
 }
 

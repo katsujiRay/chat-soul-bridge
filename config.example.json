@@ -131,10 +131,11 @@
   },
 
   "reply": {
-    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大聊天消息气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880); typingDelay=开启拟人回复延迟; firstReplyMinMs~MaxMs=首句回复随机延迟(默认1~3秒); burstBaseMs+字数*burstPerCharMs(+0~burstJitterMs,封顶burstMaxMs)=后续多条气泡按字数打字停顿(默认1s+字数*0.15s,封顶6秒,对方插话自动提前收尾); longGapProbability=可选额外随机长停顿概率(默认0关闭)",
+    "_comment": "【9. 回复节奏与媒体下载限制】maxBurstParts=长回复按换行拆分的最大聊天消息气泡条数(默认4,范围1~8); maxImageBytes=单张收图下载大小上限字节数(默认5MB=5242880); typingDelay=开启拟人回复延迟; autoQuoteOnGroupJump=群聊思考期间若有新消息插队自动给首条气泡带引用回复(默认true); firstReplyMinMs~MaxMs=首句回复随机延迟(默认1~3秒); burstBaseMs+字数*burstPerCharMs(+0~burstJitterMs,封顶burstMaxMs)=后续多条气泡按字数打字停顿(默认1s+字数*0.15s,封顶6秒,对方插话自动提前收尾); longGapProbability=可选额外随机长停顿概率(默认0关闭)",
     "maxBurstParts": 4,
     "maxImageBytes": 5242880,
     "typingDelay": true,
+    "autoQuoteOnGroupJump": true,
     "firstReplyMinMs": 1000,
     "firstReplyMaxMs": 3000,
     "burstBaseMs": 1000,

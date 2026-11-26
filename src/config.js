@@ -87,6 +87,7 @@ export const DEFAULT_CONFIG = {
     maxBurstParts: 4,
     maxImageBytes: 5242880,
     typingDelay: true,
+    autoQuoteOnGroupJump: true,
     firstReplyMinMs: 1000,
     firstReplyMaxMs: 3000,
     burstBaseMs: 1000,
