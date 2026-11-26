@@ -1171,6 +1171,16 @@ function isQuietHour() {
   return h >= start && h < end;
 }
 
+function describeTimeOfDay(date = new Date()) {
+  const h = date.getHours();
+  if (h >= 5 && h < 9) return '早上';
+  if (h >= 9 && h < 12) return '上午';
+  if (h >= 12 && h < 14) return '中午';
+  if (h >= 14 && h < 18) return '下午';
+  if (h >= 18 && h < 20) return '傍晚';
+  return '晚上';
+}
+
 function scheduleProactiveCheck(chatKey, targetEvent) {
   if (!config.proactive?.enabled) return;
   const minMs = Number(config.proactive?.checkIntervalMinMs ?? 1800000);
@@ -1218,48 +1228,92 @@ async function maybeSendProactive(chatKey, targetEvent) {
     proactiveSentSinceLastActivity.add(chatKey);
     lastActivityAt.set(chatKey, Date.now());
 
-    const nowStr = formatNow();
-    const recent = getRecentMessages(chatKey, 6);
-    const recentBlock = recent.length
-      ? `\n【之前聊到这儿】\n${recent.map((m) => `${m.time} ${m.sender}: ${m.text}`).join('\n')}`
-      : '';
+    try {
+      const nowStr = formatNow();
+      const isPrivate = targetEvent.message_type === 'private';
+      const isTrustedGroup = !isPrivate && trustedGroupSet.has(String(targetEvent.group_id));
+      const sceneTag = isPrivate
+        ? '[场景：与主人私聊]'
+        : isTrustedGroup
+          ? '[场景：信任亲密小群]'
+          : '[场景：群聊]';
 
-    const todoInjectMax = Math.max(1, Number(config.todos?.injectMaxItems ?? 5));
-    const todoLine =
-      targetEvent.message_type === 'private' && config.todos?.enabled !== false
-        ? formatTodosForPrompt(todoInjectMax)
+      let emoBlock = '';
+      if (config.emotion?.enabled !== false) {
+        if (isPrivate) {
+          const emoText = formatEmotionForPrompt();
+          if (emoText) emoBlock = `\n${emoText}`;
+        } else if (isTrustedGroup) {
+          const moodText = formatMoodForPrompt({ inGroup: true });
+          if (moodText) emoBlock = `\n${moodText}`;
+        }
+      }
+
+      const recent = getRecentMessages(chatKey, 6);
+      const recentBlock = recent.length
+        ? `\n【之前聊到这儿】\n${recent.map((m) => `${m.time} ${m.sender}: ${m.text}`).join('\n')}`
         : '';
-    const todoBlock = todoLine ? `\n${todoLine}` : '';
-    const sceneHint =
-      targetEvent.message_type === 'private'
-        ? '你和主人已经好一会儿没说话了，现在是白天空闲时间，你突然想主动私聊找他聊两句（可以问问他在干嘛、分享个小念头、或者顺着待办小纸条或之前聊过的事随口问一句）。自然一点，1~2句短话就行，别用“在吗”这种机械开场白。'
-        : '群里安静好一会儿了，你闲不住想主动冒个泡找大家唠嗑（可以随口抛个生活小脑洞、问问大家在干嘛、或者接着之前的话题逗逗大家）。自然简短，1~2句就行，别用“有人吗”这种气氛组话术。';
 
-    const prompt = `[当前时间: ${nowStr}]${todoBlock}${recentBlock}\n（主动冒泡机会：${sceneHint}）`;
-    log(`触发主动找你聊: ${chatKey}`);
+      const todoInjectMax = Math.max(1, Number(config.todos?.injectMaxItems ?? 5));
+      const todoLine =
+        (isPrivate || isTrustedGroup) && config.todos?.enabled !== false
+          ? formatTodosForPrompt(todoInjectMax)
+          : '';
+      const todoBlock = todoLine ? `\n${todoLine}` : '';
+      const timeSlot = describeTimeOfDay();
+      const sceneHint = isPrivate
+        ? `你和主人已经好一会儿没说话了，现在是${timeSlot}空闲时间，你突然想主动私聊找他聊两句（可以问问他在干嘛、分享个小念头、或者顺着待办小纸条或之前聊过的事随口问一句）。自然一点，1~2句短话就行，别用“在吗”这种机械开场白。`
+        : `群里安静好一会儿了，现在是${timeSlot}，你闲不住想主动冒个泡找大家唠嗑（可以随口抛个生活小脑洞、问问大家在干嘛、或者接着之前的话题逗逗大家）。自然简短，1~2句就行，别用“有人吗”这种气氛组话术。`;
 
-    let directSent = false;
-    const reply = await llm.chat(chatKey, {
-      text: prompt,
-      persistText: `[${nowStr.slice(11, 16)}] （主动发起闲聊）`,
-      toolContext: {
+      const prompt = `[当前时间: ${nowStr}] ${sceneTag}${emoBlock}${todoBlock}${recentBlock}\n（主动冒泡机会：${sceneHint}）`;
+      log(`触发主动找你聊: ${chatKey}`);
+
+      let directSent = false;
+      const toolContext = {
         chatKey,
         event: targetEvent,
-        markDirectSent: () => {
+        markDirectSent: (sentText) => {
           directSent = true;
+          if (sentText) toolContext.directSentText = sentText;
         },
-      },
-    });
+      };
+      const reply = await llm.chat(chatKey, {
+        text: prompt,
+        persistText: `[${nowStr.slice(11, 16)}] （主动发起闲聊）`,
+        toolContext,
+      });
 
-    if (reply && !directSent) {
-      await sendReply(targetEvent, reply);
-      log(`主动发言 ${chatKey}: ${reply.slice(0, 80)}`);
+      if (reply && !directSent) {
+        await sendReply(targetEvent, reply);
+        if (!isPrivate) {
+          lastGroupBotReplyAt.set(String(targetEvent.group_id), Date.now());
+          lastGroupBotReplyText.set(String(targetEvent.group_id), reply.slice(0, 300));
+        }
+        log(`主动发言 ${chatKey}: ${reply.slice(0, 80)}`);
+      } else if (directSent) {
+        if (!isPrivate) {
+          lastGroupBotReplyAt.set(String(targetEvent.group_id), Date.now());
+          if (toolContext.directSentText) {
+            lastGroupBotReplyText.set(String(targetEvent.group_id), String(toolContext.directSentText).slice(0, 300));
+          }
+        }
+      } else {
+        // 模型返回空且未通过工具发出：释放防连环锁，避免永久锁死
+        proactiveSentSinceLastActivity.delete(chatKey);
+        log(`主动冒泡返回为空 (${chatKey})，已自动释放锁等待下次机会`);
+      }
+    } catch (err) {
+      proactiveSentSinceLastActivity.delete(chatKey);
+      log(`主动冒泡发送失败 (${chatKey})，已自动释放锁:`, err?.message || err);
     }
   });
 }
 
 function startProactiveSchedulers() {
-  if (!config.proactive?.enabled) return;
+  if (!config.proactive?.enabled) {
+    log('主动找你聊未启用（如需开启，请在 config.json 将 proactive.enabled 设为 true 并按需填写 proactive.groupIds）');
+    return;
+  }
   const targets = [];
 
   if (config.proactive.privateEnabled !== false && config.ownerId) {
@@ -1285,9 +1339,15 @@ function startProactiveSchedulers() {
   }
 
   if (targets.length > 0) {
+    const idleMin = Math.round(Number(config.proactive.idleThresholdMs ?? 2700000) / 60000);
+    const minM = Math.round(Number(config.proactive.checkIntervalMinMs ?? 1800000) / 60000);
+    const maxM = Math.round(Number(config.proactive.checkIntervalMaxMs ?? 3600000) / 60000);
+    const probPct = Math.round(Number(config.proactive.probability ?? 0.35) * 100);
     log(
-      `已开启主动找你聊: ${targets.join(', ')}（免打扰 ${config.proactive.quietStartHour ?? 23}:00~${config.proactive.quietEndHour ?? 8}:00）`
+      `已开启主动找你聊: ${targets.join(', ')}（冷场 ${idleMin}分 | 巡检 ${minM}~${maxM}分 | 概率 ${probPct}% | 免打扰 ${config.proactive.quietStartHour ?? 23}:00~${config.proactive.quietEndHour ?? 8}:00）`
     );
+  } else {
+    log('主动找你聊已开启，但未配置目标会话（请检查 privateEnabled 与 proactive.groupIds）');
   }
 }
 
