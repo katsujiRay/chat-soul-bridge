@@ -45,6 +45,12 @@ import {
   writeDiary,
 } from './memory.js';
 import { listPersonaReferenceImages } from './persona.js';
+import {
+  deleteSlangEntry,
+  listSlangEntries,
+  resolveSlangScope,
+  upsertSlangEntry,
+} from './slang.js';
 import { addTodo, completeTodo, listTodos } from './todos.js';
 
 /** 粗略剥离 HTML 标签与常见实体，用于网页搜索摘要和正文提取 */
@@ -53,21 +59,158 @@ function stripHtml(html) {
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
+    .replace(/&nbsp;|&ensp;|&emsp;/gi, ' ')
+    .replace(/&#0*183;|&middot;/gi, '·')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&#39;|&#x27;/gi, "'")
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-async function freeWebSearch(query, limit = 5) {
-  const q = String(query || '').trim();
-  if (!q) return { ok: false, error: '搜索词不能为空' };
+const SEARCH_STYLE_HINT =
+  '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。';
+const SEARCH_MEME_HINT_RE = /(?:是什么梗|什么梗|空耳|萌娘百科|网络流行语|网络热词|网络用语|弹幕|B站|bilibili|出自.*(?:歌|曲|番|动漫|动画|游戏)|梗出处|梗百科)/i;
+const SEARCH_FACTUAL_RE = /(?:天气|价格|多少钱|攻略|教程|新闻|怎么|如何|几点|星期几|官网|下载|安装|报错|bug|翻译|计算|地图|股价|汇率)/i;
 
-  // 优先走 Bing 网页搜索（中英文稳定、免费），失败兜底 DuckDuckGo Lite
+function unwrapDdgUrl(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  const m = s.match(/[?&]uddg=([^&]+)/i);
+  if (m) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {}
+  }
+  return s.startsWith('//') ? `https:${s}` : s;
+}
+
+/** 校验搜索结果是否与主词相关，拦截 Bing 无头抓取把中文词截断成单字/跑偏成外语词条的假结果 */
+function isSearchResultsRelevant(query, results) {
+  if (!Array.isArray(results) || results.length === 0) return false;
+  const cleaned = String(query || '')
+    .replace(/(?:是什么梗|什么梗|空耳|萌娘百科|出处|网络流行语|热梗)/gi, ' ')
+    .trim()
+    .toLowerCase();
+  const tokens = (cleaned.match(/[\u4e00-\u9fa5]{2,}|[a-z0-9]{2,}/gi) || []).filter(Boolean);
+  if (tokens.length === 0) return true;
+
+  const combined = results
+    .slice(0, 3)
+    .map((r) => `${r.title || ''} ${r.snippet || ''}`.toLowerCase())
+    .join('\n');
+
+  for (const tok of tokens) {
+    if (combined.includes(tok)) return true;
+    // 长中文短语拆 2-gram 兜底匹配（如“虎纹鲨鱼”至少命中“虎纹”或“鲨鱼”）
+    if (/^[\u4e00-\u9fa5]{3,}$/.test(tok)) {
+      for (let i = 0; i + 2 <= tok.length; i++) {
+        if (combined.includes(tok.slice(i, i + 2))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function searchMoegirl(query, limit = 3) {
+  const cleanTerm = String(query || '')
+    .replace(/(?:是什么梗|什么梗|空耳|萌娘百科|出处|网络流行语|热梗|黑话)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleanTerm.length < 2 || cleanTerm.length > 24) return null;
+
+  const ua = { 'User-Agent': 'chat-soul-bridge/1.0' };
+  const exactUrl =
+    `https://zh.moegirl.org.cn/api.php?action=query&titles=${encodeURIComponent(cleanTerm)}&redirects=1` +
+    `&prop=extracts|info&exintro=1&explaintext=1&exchars=220&inprop=url&format=json`;
+  const genUrl =
+    `https://zh.moegirl.org.cn/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(cleanTerm)}&gsrlimit=${limit}` +
+    `&prop=extracts|info&exintro=1&explaintext=1&exchars=220&inprop=url&redirects=1&format=json`;
+
+  const [exactRes, genRes] = await Promise.all([
+    fetch(exactUrl, { headers: ua, signal: AbortSignal.timeout(4500) })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null),
+    fetch(genUrl, { headers: ua, signal: AbortSignal.timeout(4500) })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null),
+  ]);
+
+  const results = [];
+  const seen = new Set();
+  const redirects = exactRes?.query?.redirects || [];
+
+  for (const p of Object.values(exactRes?.query?.pages || {})) {
+    if (p.missing !== undefined || !p.title) continue;
+    const redir = redirects.find((r) => r.to === p.title);
+    const intro = String(p.extract || '').replace(/\s+/g, ' ').trim();
+    const snippet = redir
+      ? `「${redir.from}」是萌娘百科关联梗/重定向词条「${p.title}」：${intro}`
+      : intro;
+    seen.add(p.title);
+    results.push({
+      title: `${p.title} - 萌娘百科`,
+      url: p.fullurl || `https://zh.moegirl.org.cn/${encodeURIComponent(p.title)}`,
+      snippet: snippet.slice(0, 220),
+      exactMatch: true,
+    });
+  }
+
+  const genPages = Object.values(genRes?.query?.pages || {}).sort((a, b) => (a.index || 99) - (b.index || 99));
+  for (const p of genPages) {
+    if (results.length >= limit) break;
+    if (!p.title || seen.has(p.title)) continue;
+    seen.add(p.title);
+    results.push({
+      title: `${p.title} - 萌娘百科`,
+      url: p.fullurl || `https://zh.moegirl.org.cn/${encodeURIComponent(p.title)}`,
+      snippet: String(p.extract || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+    });
+  }
+
+  if (results.length > 0) {
+    return { ok: true, engine: 'moegirl', results, reply_style_hint: SEARCH_STYLE_HINT };
+  }
+  return null;
+}
+
+async function searchDuckDuckGo(q, limit = 5) {
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}&kl=cn-zh`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status !== 200) return null;
+    const html = await res.text();
+    const results = [];
+    const blocks = html.split(/<div[^>]*class="[^"]*result__body[^"]*"[^>]*>/i).slice(1);
+    for (const block of blocks) {
+      if (results.length >= limit) break;
+      const linkMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+      if (!linkMatch) continue;
+      const snipMatch =
+        block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i) ||
+        block.match(/<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/div>/i);
+      results.push({
+        title: stripHtml(linkMatch[2]),
+        url: unwrapDdgUrl(linkMatch[1]),
+        snippet: stripHtml(snipMatch ? snipMatch[1] : '').slice(0, 220),
+      });
+    }
+    if (results.length > 0) {
+      return { ok: true, engine: 'duckduckgo', results, reply_style_hint: SEARCH_STYLE_HINT };
+    }
+  } catch {}
+  return null;
+}
+
+async function searchBing(q, limit = 5) {
   try {
     const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}&count=${limit}`;
     const res = await fetch(url, {
@@ -76,70 +219,130 @@ async function freeWebSearch(query, limit = 5) {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(8000),
     });
-    if (res.ok) {
-      const html = await res.text();
-      const results = [];
-      const blocks = html.split(/<li class="b_algo"[^>]*>/i).slice(1);
-      for (const block of blocks) {
-        if (results.length >= limit) break;
-        const linkMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
-        if (!linkMatch) continue;
-        const snippetMatch =
-          block.match(/<p[^>]*>([\s\S]*?)<\/p>/i) || block.match(/<div class="b_caption"[^>]*>([\s\S]*?)<\/div>/i);
-        results.push({
-          title: stripHtml(linkMatch[2]),
-          url: linkMatch[1],
-          snippet: stripHtml(snippetMatch ? snippetMatch[1] : '').slice(0, 220),
-        });
-      }
-      if (results.length > 0) {
-        return {
-          ok: true,
-          engine: 'bing',
-          results,
-          reply_style_hint:
-            '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。',
-        };
-      }
+    if (!res.ok) return null;
+    const html = await res.text();
+    const results = [];
+    const blocks = html.split(/<li class="b_algo"[^>]*>/i).slice(1);
+    for (const block of blocks) {
+      if (results.length >= limit) break;
+      const linkMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+      if (!linkMatch) continue;
+      const snippetMatch =
+        block.match(/<p[^>]*>([\s\S]*?)<\/p>/i) || block.match(/<div class="b_caption"[^>]*>([\s\S]*?)<\/div>/i);
+      results.push({
+        title: stripHtml(linkMatch[2]),
+        url: linkMatch[1],
+        snippet: stripHtml(snippetMatch ? snippetMatch[1] : '').slice(0, 220),
+      });
+    }
+    if (results.length > 0) {
+      return { ok: true, engine: 'bing', results, reply_style_hint: SEARCH_STYLE_HINT };
     }
   } catch {}
+  return null;
+}
 
-  try {
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (res.ok) {
-      const html = await res.text();
-      const results = [];
-      const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/div>)?/gi;
-      let m;
-      while ((m = re.exec(html)) && results.length < limit) {
-        results.push({
-          title: stripHtml(m[2]),
-          url: m[1],
-          snippet: stripHtml(m[3] || m[4] || '').slice(0, 220),
-        });
+async function rawFreeWebSearch(q, limit = 5, { preferMeme = false } = {}) {
+  if (preferMeme) {
+    // 查梗/空耳时并行查官方萌娘百科 JSON API + 限时 DuckDuckGo（限时 1800ms，绝不因单边慢/被墙拖垮整体超时）
+    const ddgCapped = Promise.race([
+      searchDuckDuckGo(q, limit),
+      new Promise((resolve) => setTimeout(() => resolve(null), 1800)),
+    ]);
+    const [moegirl, ddg] = await Promise.all([
+      searchMoegirl(q, Math.min(3, limit)),
+      ddgCapped,
+    ]);
+    const merged = [];
+    const seen = new Set();
+    const addRows = (rows) => {
+      for (const r of rows || []) {
+        if (merged.length >= limit) break;
+        if (!r?.url || seen.has(r.url)) continue;
+        seen.add(r.url);
+        merged.push(r);
       }
-      if (results.length > 0) {
-        return {
-          ok: true,
-          engine: 'duckduckgo',
-          results,
-          reply_style_hint:
-            '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。',
-        };
-      }
+    };
+    // 优先放入 DDG 命中或萌娘精确重定向命中
+    if (moegirl?.results?.some((r) => r.exactMatch)) {
+      addRows(moegirl.results.filter((r) => r.exactMatch));
     }
-  } catch {}
+    if (ddg && isSearchResultsRelevant(q, ddg.results)) {
+      addRows(ddg.results);
+    }
+    if (moegirl && isSearchResultsRelevant(q, moegirl.results)) {
+      addRows(moegirl.results);
+    }
+    if (merged.length > 0) {
+      return {
+        ok: true,
+        engine: ddg && moegirl ? 'moegirl+duckduckgo' : moegirl ? 'moegirl' : 'duckduckgo',
+        results: merged,
+        reply_style_hint: SEARCH_STYLE_HINT,
+      };
+    }
+    const bing = await searchBing(q, limit);
+    if (bing && isSearchResultsRelevant(q, bing.results)) return bing;
+    if (moegirl) return moegirl;
+    if (ddg) return ddg;
+    if (bing) return bing;
+    return { ok: false, error: '暂时没搜到结果，稍后再试试吧' };
+  }
 
+  // 常规查询优先 Bing；若 Bing 返回跑偏/截断的反爬假结果，自动切 DuckDuckGo 兜底
+  const bing = await searchBing(q, limit);
+  if (bing && isSearchResultsRelevant(q, bing.results)) return bing;
+  const ddg = await searchDuckDuckGo(q, limit);
+  if (ddg && isSearchResultsRelevant(q, ddg.results)) return ddg;
+  if (ddg) return ddg;
+  if (bing) return bing;
   return { ok: false, error: '暂时没搜到结果，稍后再试试吧' };
+}
+
+export async function freeWebSearch(query, limit = 5, { intent = '' } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return { ok: false, error: '搜索词不能为空' };
+
+  const wantsMeme = String(intent || '').toLowerCase() === 'meme';
+  const hasMemeKw = /(?:梗|空耳|萌娘|出处|热词|黑话)/i.test(q);
+  const firstQuery = wantsMeme && !hasMemeKw ? `${q} 是什么梗 空耳 萌娘百科` : q;
+  const primary = await rawFreeWebSearch(firstQuery, limit, { preferMeme: wantsMeme || hasMemeKw });
+
+  // 短词防直男搜偏兜底：模型只传了 2~8 字名词且首搜全是百科/直播等非梗结果时，顺手补搜一次「是什么梗 空耳」+ 萌娘百科
+  if (
+    !wantsMeme &&
+    !hasMemeKw &&
+    q.length >= 2 &&
+    q.length <= 8 &&
+    !SEARCH_FACTUAL_RE.test(q) &&
+    (!primary.ok || !primary.results.some((r) => SEARCH_MEME_HINT_RE.test(`${r.title} ${r.snippet}`)))
+  ) {
+    const memeRes = await rawFreeWebSearch(`${q} 是什么梗 空耳`, 3, { preferMeme: true });
+    if (memeRes.ok) {
+      const memeHits = memeRes.results.filter(
+        (r) => r.exactMatch || SEARCH_MEME_HINT_RE.test(`${r.title} ${r.snippet}`)
+      );
+      if (memeHits.length > 0) {
+        const seen = new Set(memeHits.map((r) => r.url));
+        const baseResults = primary.ok && isSearchResultsRelevant(q, primary.results) ? primary.results : [];
+        const merged = [
+          ...memeHits.slice(0, 2),
+          ...baseResults.filter((r) => !seen.has(r.url)),
+        ].slice(0, limit);
+        return {
+          ok: true,
+          engine: memeRes.engine,
+          results: merged,
+          reply_style_hint: SEARCH_STYLE_HINT,
+          meme_fallback_used: true,
+        };
+      }
+    }
+  }
+
+  return primary;
 }
 
 async function fetchWebPage(url) {
@@ -181,7 +384,12 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
           properties: {
             query: {
               type: 'string',
-              description: '搜索关键词（查梗/空耳时请附带“是什么梗”或“空耳 出处 萌娘百科”）。',
+              description: '搜索关键词（查梗/空耳时请附带“是什么梗”或传 intent="meme"）。',
+            },
+            intent: {
+              type: 'string',
+              enum: ['general', 'meme'],
+              description: '可选：查网络热梗/空耳/弹幕黑话时填 "meme"，系统会自动拼接“是什么梗 空耳 萌娘百科”。',
             },
           },
           required: ['query'],
@@ -714,6 +922,48 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
         },
         required: ['action'],
       },
+    },
+    {
+      type: 'function',
+      name: 'chat_slang_learn',
+      description:
+        '读写本地梗/热词数据库（state/slang.db）。当你通过搜索刚搞懂一个网络热梗/空耳，或者在群里学到大家常玩的新造梗/内部黑话时，用 action="save" 存进去（写口语接法，别写百科长文），以后群里再提到就能 0.1ms 秒懂接梗！',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['save', 'list', 'delete'],
+            description: 'save=保存或更新一条梗；list=翻查本地梗库；delete=删除过时/记错的梗。',
+          },
+          term: {
+            type: 'string',
+            description: '梗的核心触发词（2~20字，save/delete 时必填，如 "虎纹鲨鱼"）。',
+          },
+          meaning: {
+            type: 'string',
+            description: 'save 时必填：一句极简大白话说明这是什么梗（别写长篇百科）。',
+          },
+          reply_guide: {
+            type: 'string',
+            description: 'save 时建议填：听到这个梗怎么用人设口语自然接茬或吐槽（如“顺嘴接下半句或笑着吐槽”）。',
+          },
+          aliases: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '可选：常见别名、缩写或同义变体。',
+          },
+          is_public: {
+            type: 'boolean',
+            description: 'save 时区分范围：网络公开热梗填 true（全局共享）；本群自造梗/私密梗填 false（仅当前会话/信任圈可见，绝不跨外群泄露）。',
+          },
+          query: {
+            type: 'string',
+            description: 'list 时可选：按关键词筛选本地梗库。',
+          },
+        },
+        required: ['action'],
+      },
     }
   );
 
@@ -738,6 +988,7 @@ export function selectToolsForContext(
     hasImageGen = false,
     enableEmotion = true,
     enableTodos = true,
+    enableSlang = true,
   } = {}
 ) {
   const trustedSet = new Set((trustedGroups || []).map(String));
@@ -763,6 +1014,9 @@ export function selectToolsForContext(
   }
   if (!enableTodos) {
     hidden.add('chat_todo');
+  }
+  if (!enableSlang) {
+    hidden.add('chat_slang_learn');
   }
   if (!ownerId) {
     hidden.add('chat_dm_owner');
@@ -803,6 +1057,7 @@ export function createToolExecutor({
   imageGenConfig = { enabled: false },
   enableEmotion = true,
   enableTodos = true,
+  enableSlang = true,
   forwardConfig = {},
   getBotName = () => 'Bot',
   getReferencePath = () => '',
@@ -829,7 +1084,7 @@ export function createToolExecutor({
     try {
       switch (name) {
         case 'web_search':
-          return await freeWebSearch(args.query, 5);
+          return await freeWebSearch(args.query, 5, { intent: args.intent });
 
         case 'web_fetch':
           return await fetchWebPage(args.url);
@@ -1623,6 +1878,42 @@ export function createToolExecutor({
             return { ok: true, count: items.length, items };
           }
           return { ok: false, error: `不支持的 action="${action}"，可选 add / done / list` };
+        }
+
+        case 'chat_slang_learn': {
+          if (!enableSlang) {
+            return { ok: false, error: '本地梗库已在 config.json -> slang.enabled 中关闭' };
+          }
+          const slangScope = resolveSlangScope(event, {
+            ownerId,
+            trustedGroups,
+            privateMemoryGroups,
+          });
+          const action = String(args.action || '').trim().toLowerCase();
+          if (action === 'save') {
+            const isPublic = args.is_public === true;
+            const scopeKey = isPublic ? 'global' : slangScope.writeScope;
+            return upsertSlangEntry({
+              term: args.term,
+              aliases: args.aliases || [],
+              meaning: args.meaning || '',
+              replyGuide: args.reply_guide || '',
+              source: isPublic ? 'web' : 'group',
+              scopeKey,
+            });
+          }
+          if (action === 'list') {
+            const items = listSlangEntries({
+              readScopes: slangScope.readScopes,
+              query: args.query || '',
+              limit: 20,
+            });
+            return { ok: true, count: items.length, items };
+          }
+          if (action === 'delete') {
+            return deleteSlangEntry(args.term, slangScope.readScopes);
+          }
+          return { ok: false, error: `不支持的 action="${action}"，可选 save / list / delete` };
         }
 
         default:

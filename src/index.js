@@ -56,6 +56,15 @@ import {
 } from './memory.js';
 import { listPersonaReferenceImages, loadPersona } from './persona.js';
 import { createSafetyGuard, ensureRateLimitFile } from './safety.js';
+import {
+  ensureSlangDb,
+  extractAbruptSlangCandidate,
+  findMatchingSlang,
+  formatSlangForPrompt,
+  getSlangDbPath,
+  resolveSlangScope,
+  sniffAndLearnSlang,
+} from './slang.js';
 import { markSyncHandled, syncMemoryAndCatchup, waitForClientReady } from './sync.js';
 import {
   configureTodos,
@@ -66,7 +75,7 @@ import {
   onTodosChanged,
   removeTodosByIds,
 } from './todos.js';
-import { buildTools, createToolExecutor, selectToolsForContext } from './tools.js';
+import { buildTools, createToolExecutor, freeWebSearch, selectToolsForContext } from './tools.js';
 
 const runtime = getBotRuntime();
 const ROOT = runtime.dataRoot;
@@ -206,6 +215,7 @@ const executeTool = createToolExecutor({
   imageGenConfig,
   enableEmotion: config.emotion?.enabled !== false,
   enableTodos: config.todos?.enabled !== false,
+  enableSlang: config.slang?.enabled !== false,
   forwardConfig: config.forward,
   getBotName: () => getPersona().name,
   getReferencePath: () => getPersona().referencePath,
@@ -299,6 +309,7 @@ function getToolsForChat(chatKey) {
     hasImageGen: imageGenConfig.enabled === true,
     enableEmotion: config.emotion?.enabled !== false,
     enableTodos: config.todos?.enabled !== false,
+    enableSlang: config.slang?.enabled !== false,
   });
 }
 
@@ -1936,6 +1947,49 @@ async function handleMessage(event) {
           contextPrefix += `\n${impLine}`;
         }
       }
+
+      // 0.1ms 本地梗库扫描 + 跳戏短语自动联网嗅梗入库（仅当轮注入，不落盘进 context.db）
+      if (config.slang?.enabled !== false && rawTextForTrigger) {
+        const slangScope = resolveSlangScope(event, {
+          ownerId: config.ownerId,
+          trustedGroups: config.memoryPrivacy?.trustedGroups || [],
+          privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
+        });
+        let slangHits = findMatchingSlang(rawTextForTrigger, slangScope.readScopes, {
+          maxHits: config.slang?.injectMaxHits ?? 2,
+        });
+        if (
+          slangHits.length === 0 &&
+          config.slang?.autoSniff !== false &&
+          config.tools?.webSearch !== false
+        ) {
+          const recentForSniff = getRecentMessages(chatKey, 6).slice(0, -1);
+          const p = getPersona();
+          const botKeywords = [
+            p.name,
+            ...(p.keywords || []),
+            ...(config.groupTrigger?.keywords || []),
+          ];
+          const candidate = extractAbruptSlangCandidate(rawTextForTrigger, recentForSniff, {
+            botKeywords,
+            missCacheHours: config.slang?.missCacheHours ?? 24,
+          });
+          if (candidate) {
+            const learned = await sniffAndLearnSlang({
+              candidate,
+              searchFn: freeWebSearch,
+              timeoutMs: config.slang?.sniffTimeoutMs ?? 2800,
+              log,
+            });
+            if (learned) slangHits = [learned];
+          }
+        }
+        const slangBlock = formatSlangForPrompt(slangHits);
+        if (slangBlock) {
+          contextPrefix += `\n${slangBlock}`;
+        }
+      }
+
       let replyHint = '';
       if (replyId) {
         if (quotedMessage && quotedMessage.text) {
@@ -2354,6 +2408,7 @@ log('chat-soul-bridge 启动中...');
 ensureEmotionFile();
 ensureImpressionsDb();
 seedImpressionsFromConfig(config);
+ensureSlangDb();
 ensureMediaArchiveDir();
 ensureDiaryDir(diaryDir);
 ensureTodosFile();
@@ -2387,6 +2442,7 @@ log(
 );
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);
 log(`本地人物印象库已就绪: ${getImpressionsDbPath()}`);
+log(`本地梗库已就绪: ${getSlangDbPath()}（自动嗅梗 ${config.slang?.autoSniff !== false ? '开' : '关'}）`);
 initMemoryDb()
   .then((res) => {
     if (res?.ok) log(`本地记忆库已就绪: ${res.db}`);

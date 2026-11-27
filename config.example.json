@@ -286,6 +286,15 @@
     "maxCharsPerUser": 60
   },
 
+  "slang": {
+    "_comment": "【17.5 本地梗库与自动嗅梗引擎（state/slang.db，公开网络梗 global 共享、群内自造梗按群严格隔离）】enabled=总开关; autoSniff=遇到突然跳戏的2~12字短语时桥接层自动限时搜梗并入库(默认true); sniffTimeoutMs=自动嗅梗超时上限(默认3500ms防卡顿); missCacheHours=非梗词负缓存小时数(默认24h避免反复搜); injectMaxHits=每轮最多注入命中梗条数(默认2)",
+    "enabled": true,
+    "autoSniff": true,
+    "sniffTimeoutMs": 3500,
+    "missCacheHours": 24,
+    "injectMaxHits": 2
+  },
+
   "mediaArchive": {
     "_comment": "【18. 图片记忆归档（state/media/）】enabled=收图/画图自动本地归档防 图片外链过期; autoCaption=发完回复后异步补写简短图注进 memory.db 供 chat_recall 搜图; captionModel=可选轻量视觉模型ID(留空复用当前模型); maxFiles/maxTotalMB=LRU 自动清理上限",
     "enabled": true,

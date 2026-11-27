@@ -187,6 +187,13 @@ export const DEFAULT_CONFIG = {
     injectMaxUsers: 2,
     maxCharsPerUser: 60,
   },
+  slang: {
+    enabled: true,
+    autoSniff: true,
+    sniffTimeoutMs: 3500,
+    missCacheHours: 24,
+    injectMaxHits: 2,
+  },
   mediaArchive: {
     enabled: true,
     autoCaption: true,
@@ -333,6 +340,7 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     imageGen,
     memoryPrivacy: mergeSection(DEFAULT_CONFIG.memoryPrivacy, raw.memoryPrivacy),
     impressions: mergeSection(DEFAULT_CONFIG.impressions, raw.impressions),
+    slang: mergeSection(DEFAULT_CONFIG.slang, raw.slang),
     mediaArchive: mergeSection(DEFAULT_CONFIG.mediaArchive, raw.mediaArchive),
     startupCatchup: mergeSection(DEFAULT_CONFIG.startupCatchup, raw.startupCatchup),
     paths,

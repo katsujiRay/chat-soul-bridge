@@ -20,6 +20,7 @@ import { ensureImpressionsDb } from '../src/impressions.js';
 import { ensureMediaArchiveDir } from '../src/media-archive.js';
 import { CODE_ROOT, getBotRuntime } from '../src/runtime.js';
 import { ensureRateLimitFile } from '../src/safety.js';
+import { ensureSlangDb } from '../src/slang.js';
 import { discoverSnowLumaConfigs, probeDiscoveredBots } from '../src/snowluma-discover.js';
 import { ensureTodosFile } from '../src/todos.js';
 
@@ -196,6 +197,8 @@ async function initCurrentDirectory() {
   // 4. 确保人物印象库、图片归档目录、长期小本本、情感状态与动态待办文件存在（不覆盖已有数据）
   const impExisted = ensureImpressionsDb();
   log(impExisted ? '人物印象库已存在: state/impressions.db' : '已新建人物印象库: state/impressions.db');
+  const slangExisted = ensureSlangDb();
+  log(slangExisted ? '本地梗库已存在: state/slang.db' : '已新建本地梗库: state/slang.db');
   const mediaExisted = ensureMediaArchiveDir();
   log(mediaExisted ? '图片记忆归档目录已存在: state/media/' : '已新建图片记忆归档目录: state/media/');
   ensureJsonFile('state/memory.json', {});
