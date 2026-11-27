@@ -189,10 +189,16 @@ export const DEFAULT_CONFIG = {
   },
   slang: {
     enabled: true,
+    seedBuiltins: true,
     autoSniff: true,
+    repeatDetect: true,
+    repeatWindowMs: 2700000,
+    repeatMinSpeakers: 2,
+    asyncLlmLearn: false,
+    asyncLlmCooldownMs: 30000,
     sniffTimeoutMs: 3500,
     missCacheHours: 24,
-    injectMaxHits: 2,
+    injectMaxHits: 3,
   },
   mediaArchive: {
     enabled: true,

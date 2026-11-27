@@ -57,12 +57,15 @@ import {
 import { listPersonaReferenceImages, loadPersona } from './persona.js';
 import { createSafetyGuard, ensureRateLimitFile } from './safety.js';
 import {
+  asyncLearnSlangWithLlm,
   ensureSlangDb,
   extractAbruptSlangCandidate,
   findMatchingSlang,
   formatSlangForPrompt,
   getSlangDbPath,
+  observeAndSniffGroupRepeat,
   resolveSlangScope,
+  seedDefaultSlang,
   sniffAndLearnSlang,
 } from './slang.js';
 import { markSyncHandled, syncMemoryAndCatchup, waitForClientReady } from './sync.js';
@@ -1808,6 +1811,35 @@ async function handleMessage(event) {
     });
   }
 
+  // 第 2 层：旁听所有群消息（含未触发回复的水聊），0 成本跨发言者重复词捕捉并后台验真入库
+  if (
+    event.message_type === 'group' &&
+    rawTextForTrigger &&
+    config.slang?.enabled !== false &&
+    config.slang?.repeatDetect !== false &&
+    config.tools?.webSearch !== false
+  ) {
+    const repeatScope = resolveSlangScope(event, {
+      ownerId: config.ownerId,
+      trustedGroups: config.memoryPrivacy?.trustedGroups || [],
+      privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
+    });
+    const p = getPersona();
+    observeAndSniffGroupRepeat({
+      chatKey,
+      userId: event.user_id,
+      text: rawTextForTrigger,
+      readScopes: repeatScope.readScopes,
+      botKeywords: [p.name, ...(p.keywords || []), ...(config.groupTrigger?.keywords || [])],
+      windowMs: config.slang?.repeatWindowMs ?? 2700000,
+      minSpeakers: config.slang?.repeatMinSpeakers ?? 2,
+      missCacheHours: config.slang?.missCacheHours ?? 24,
+      searchFn: freeWebSearch,
+      timeoutMs: config.slang?.sniffTimeoutMs ?? 3500,
+      log,
+    });
+  }
+
   if (event.message_type === 'group' && !triggerReason) {
     if (config.groupTrigger?.logSkipped !== false) {
       const preview = (recentRecordText || fallbackRecordText || '').replace(/\s+/g, ' ').slice(0, 50);
@@ -1949,14 +1981,16 @@ async function handleMessage(event) {
       }
 
       // 0.1ms 本地梗库扫描 + 跳戏短语自动联网嗅梗入库（仅当轮注入，不落盘进 context.db）
+      let slangScope = null;
+      let slangHits = [];
       if (config.slang?.enabled !== false && rawTextForTrigger) {
-        const slangScope = resolveSlangScope(event, {
+        slangScope = resolveSlangScope(event, {
           ownerId: config.ownerId,
           trustedGroups: config.memoryPrivacy?.trustedGroups || [],
           privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
         });
-        let slangHits = findMatchingSlang(rawTextForTrigger, slangScope.readScopes, {
-          maxHits: config.slang?.injectMaxHits ?? 2,
+        slangHits = findMatchingSlang(rawTextForTrigger, slangScope.readScopes, {
+          maxHits: config.slang?.injectMaxHits ?? 3,
         });
         if (
           slangHits.length === 0 &&
@@ -1978,7 +2012,7 @@ async function handleMessage(event) {
             const learned = await sniffAndLearnSlang({
               candidate,
               searchFn: freeWebSearch,
-              timeoutMs: config.slang?.sniffTimeoutMs ?? 2800,
+              timeoutMs: config.slang?.sniffTimeoutMs ?? 3500,
               log,
             });
             if (learned) slangHits = [learned];
@@ -2162,6 +2196,43 @@ async function handleMessage(event) {
         lastGroupBotReplyAt.set(String(event.group_id), Date.now());
         if (toolContext.directSentText) {
           lastGroupBotReplyText.set(String(event.group_id), String(toolContext.directSentText).slice(0, 300));
+        }
+      }
+
+      // 第 3 层：主回复发出后后台异步轻量偷学（默认关闭，config.json -> slang.asyncLlmLearn=true 按需开启，0ms 延迟）
+      if (
+        config.slang?.enabled !== false &&
+        config.slang?.asyncLlmLearn === true &&
+        rawTextForTrigger
+      ) {
+        const quickClient =
+          semanticJudge?.mode === 'http' && semanticJudge.client
+            ? semanticJudge.client
+            : llm?.supportsQuickJudge && typeof llm.quickText === 'function'
+              ? llm
+              : null;
+        if (quickClient) {
+          const scopeForAsync =
+            slangScope ||
+            resolveSlangScope(event, {
+              ownerId: config.ownerId,
+              trustedGroups: config.memoryPrivacy?.trustedGroups || [],
+              privateMemoryGroups: config.memoryPrivacy?.privateMemoryGroups || [],
+            });
+          const recentForAsync = getRecentMessages(chatKey, 4).slice(0, -1);
+          asyncLearnSlangWithLlm({
+            chatKey,
+            rawText: rawTextForTrigger,
+            recentMessages: recentForAsync,
+            existingHits: slangHits,
+            slangScope: scopeForAsync,
+            quickClient,
+            preferredModel: semanticJudge?.model || '',
+            searchFn: config.tools?.webSearch !== false ? freeWebSearch : null,
+            timeoutMs: config.slang?.sniffTimeoutMs ?? 3500,
+            cooldownMs: config.slang?.asyncLlmCooldownMs ?? 30000,
+            log,
+          }).catch(() => {});
         }
       }
 
@@ -2409,6 +2480,7 @@ ensureEmotionFile();
 ensureImpressionsDb();
 seedImpressionsFromConfig(config);
 ensureSlangDb();
+const slangSeedRes = config.slang?.seedBuiltins !== false ? seedDefaultSlang() : { inserted: 0, total: 0 };
 ensureMediaArchiveDir();
 ensureDiaryDir(diaryDir);
 ensureTodosFile();
@@ -2442,7 +2514,9 @@ log(
 );
 log(`本地短期上下文库已就绪: ${getContextDbPath()}`);
 log(`本地人物印象库已就绪: ${getImpressionsDbPath()}`);
-log(`本地梗库已就绪: ${getSlangDbPath()}（自动嗅梗 ${config.slang?.autoSniff !== false ? '开' : '关'}）`);
+log(
+  `本地梗库已就绪: ${getSlangDbPath()}（种子 ${slangSeedRes.total}条/新补${slangSeedRes.inserted} | 自动嗅梗 ${config.slang?.autoSniff !== false ? '开' : '关'} | 重复词捕捉 ${config.slang?.repeatDetect !== false ? '开' : '关'} | 后台偷学 ${config.slang?.asyncLlmLearn === true ? '开' : '关'}）`
+);
 initMemoryDb()
   .then((res) => {
     if (res?.ok) log(`本地记忆库已就绪: ${res.db}`);

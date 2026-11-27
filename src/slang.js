@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { DEFAULT_SLANG_SEEDS } from './slang-seeds.js';
 
 const STATE_DIR = path.resolve(process.cwd(), 'state');
 const DB_PATH = path.join(STATE_DIR, 'slang.db');
@@ -65,6 +66,34 @@ export function ensureSlangDb() {
   return existed;
 }
 
+/** 第 1 层：幂等预装内置精选种子梗库（INSERT OR IGNORE，绝不覆盖用户或模型改写过的词条） */
+export function seedDefaultSlang() {
+  const db = getDb();
+  const now = Date.now();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO slang_entries
+      (term, scope_key, aliases, meaning, reply_guide, source, hit_count, created_at, updated_at)
+     VALUES (?, 'global', ?, ?, ?, 'seed', 0, ?, ?)`
+  );
+  let inserted = 0;
+  for (const item of DEFAULT_SLANG_SEEDS) {
+    const term = String(item?.term || '').trim();
+    if (term.length < 2) continue;
+    const aliases = Array.isArray(item.aliases) ? item.aliases.map((a) => String(a || '').trim()).filter(Boolean) : [];
+    const res = stmt.run(
+      term,
+      JSON.stringify(aliases),
+      String(item.meaning || '').trim(),
+      String(item.replyGuide || '').trim(),
+      now,
+      now
+    );
+    if (res.changes > 0) inserted += 1;
+  }
+  if (inserted > 0) invalidateCache();
+  return { inserted, total: DEFAULT_SLANG_SEEDS.length };
+}
+
 function parseJsonArray(raw) {
   try {
     const arr = JSON.parse(raw || '[]');
@@ -111,9 +140,9 @@ function loadAllEntriesCached() {
 /** 计算当前会话允许读取/写入的梗库分区（公开网络梗始终在 global，群内私有梗严格按群隔离） */
 export function resolveSlangScope(
   event,
-  { ownerId = null, ownerQQ = null, trustedGroups = [], privateMemoryGroups = [] } = {}
+  { ownerId = null, trustedGroups = [], privateMemoryGroups = [] } = {}
 ) {
-  const ownerStr = String(ownerId ?? ownerQQ ?? '');
+  const ownerStr = String(ownerId ?? '');
   const trustedSet = new Set((trustedGroups || []).map(String));
   const privateMemSet = new Set((privateMemoryGroups || []).map(String));
 
@@ -332,7 +361,7 @@ const NON_SLANG_PREFIX_RE =
 const FACTUAL_QUESTION_RE = /(?:天气|几点|星期几|几号|价格|多少钱|怎么[办弄做写用买去]|如何|教程|攻略|推荐|对比|区别|翻译|计算|提醒我|帮我|下载|安装|报错|bug)/i;
 
 const MEME_SIGNAL_RE =
-  /(?:是什么梗|什么梗|关联梗\/重定向词条|空耳|网络流行语|网络热词|网络用语|成句|段子|表情包|玩梗|热梗|烂梗|恶搞|弹幕|鬼畜|名台词|谐音梗|出自.*(?:歌|曲|番|动漫|动画|游戏|电影|视频)|梗出处|梗百科|梗指南|梗Wiki)/i;
+  /(?:是什么梗|什么梗|关联梗\/重定向词条|空耳|网络流行语|网络热词|网络用语|成句|段子|表情包|玩梗|热梗|烂梗|恶搞|弹幕|鬼畜|名台词|台词|流行起来|谐音梗|出自.*(?:歌|曲|番|动漫|动画|游戏|电影|视频)|梗出处|梗百科|梗指南|梗Wiki)/i;
 
 const CONTEXT_STOP_2GRAMS = new Set([
   '什么', '怎么', '这个', '那个', '就是', '不是', '还是', '可以', '一下', '我们', '你们', '他们',
@@ -489,4 +518,307 @@ export async function sniffAndLearnSlang({
     return saved.entry;
   }
   return null;
+}
+
+// ── 第 2 层：群聊高频重复词 0 成本捕捉（跨发言者最长公共子串，无标点也能抽词） ───────
+
+const repeatWindows = new Map(); // chatKey -> [{ userId, text, ts }]
+const inFlightSniffs = new Set();
+
+const EDGE_GLUE_CHARS = new Set(
+  '的了么吗呢啊吧呀哈哦嗯就都是有不在也还这那我你他她它很太真和跟与或但又被把给'.split('')
+);
+
+const REPEAT_COMMON_PHRASE_RE =
+  /^(?:什么意思|不知道|知不知道|有没有|还可以|差不多|没关系|怎么回事|什么时候|为什么|真的假的|感觉还行|今天晚上|明天早上|明天下午|等一下|看一下|试一下|买一个|吃什么|点外卖|喝奶茶|玩游戏|打游戏|写代码|睡觉了|上班了|下班了|回家了|太好了|好厉害|真不错|有点东西|确实不错|不好意思|对不起|谢谢你|辛苦了|加油啊|没事吧|怎么了|发生什么|可以可以|好的好的|哈哈哈哈|呜呜呜|笑死我了|我也是|我觉得|我认为|我感觉|其实吧|但是呢|然后呢|所以呢|不过呢)$/i;
+
+function normalizeForLcs(rawText, botKeywords = []) {
+  let s = String(rawText || '').trim();
+  if (!s || /https?:\/\/|\[合并转发|\[图片|\[引用/.test(s)) return '';
+  for (const kw of botKeywords || []) {
+    const k = String(kw || '').trim();
+    if (k.length >= 2) {
+      const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      s = s.replace(new RegExp(escaped, 'gi'), ' ');
+    }
+  }
+  return s.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+/** 抽离两段发言之间 3~8 字的无标点最长公共实词片段 */
+function extractSharedPhrases(a, b) {
+  const segsA = a.match(/[\u4e00-\u9fa5a-zA-Z0-9]{3,}/g) || [];
+  const segsB = b.match(/[\u4e00-\u9fa5a-zA-Z0-9]{3,}/g) || [];
+  if (segsA.length === 0 || segsB.length === 0) return [];
+
+  const found = new Set();
+  for (const sa of segsA) {
+    const la = sa.toLowerCase();
+    for (const sb of segsB) {
+      const lb = sb.toLowerCase();
+      // 滑动查找最大公共连续片段
+      const m = la.length;
+      const n = lb.length;
+      let prev = new Int16Array(n + 1);
+      for (let i = 1; i <= m; i++) {
+        const cur = new Int16Array(n + 1);
+        for (let j = 1; j <= n; j++) {
+          if (la[i - 1] === lb[j - 1]) {
+            cur[j] = prev[j - 1] + 1;
+            const len = cur[j];
+            // 仅在极大匹配结束位置或到达上限 8 时采样
+            const isMaximal = i === m || j === n || la[i] !== lb[j];
+            if (len >= 3 && (isMaximal || len === 8)) {
+              const takeLen = Math.min(8, len);
+              found.add(sa.slice(i - takeLen, i));
+            }
+          }
+        }
+        prev = cur;
+      }
+    }
+  }
+  return [...found];
+}
+
+function cleanRepeatCandidate(raw) {
+  let s = String(raw || '').trim();
+  while (s.length > 0 && EDGE_GLUE_CHARS.has(s[0])) s = s.slice(1);
+  while (s.length > 0 && EDGE_GLUE_CHARS.has(s[s.length - 1])) s = s.slice(0, -1);
+  s = s.trim();
+  if (s.length < 3 || s.length > 8) return '';
+  if (/^\d+$/.test(s) || /^(.)\1+$/.test(s)) return '';
+  if (NON_SLANG_PREFIX_RE.test(s) || FACTUAL_QUESTION_RE.test(s) || REPEAT_COMMON_PHRASE_RE.test(s)) return '';
+  return s;
+}
+
+/**
+ * 监听每条群消息（包括未触发回复的旁听水聊），0 成本检测跨发言者重复出现的疑似新梗短语。
+ * 返回被触发的候选词（无则空字符串），用于后台异步验真入库（0ms 不阻塞当前消息）。
+ */
+export function observeGroupSlangRepeat({
+  chatKey,
+  userId,
+  text,
+  readScopes = ['global'],
+  botKeywords = [],
+  windowMs = 45 * 60 * 1000,
+  minSpeakers = 2,
+  missCacheHours = 24,
+}) {
+  const key = String(chatKey || '');
+  const uid = String(userId || '');
+  if (!key || !uid) return '';
+  const clean = normalizeForLcs(text, botKeywords);
+  if (clean.length < 3) return '';
+
+  const now = Date.now();
+  const cutoff = now - Math.max(60000, Number(windowMs) || 45 * 60 * 1000);
+  const buf = (repeatWindows.get(key) || []).filter((item) => item.ts >= cutoff);
+
+  const candidateSpeakers = new Map(); // phrase -> Set(userId)
+  for (const prev of buf) {
+    if (prev.userId === uid) continue;
+    const shared = extractSharedPhrases(clean, prev.text);
+    for (const rawPhrase of shared) {
+      const cand = cleanRepeatCandidate(rawPhrase);
+      if (!cand) continue;
+      if (!candidateSpeakers.has(cand)) candidateSpeakers.set(cand, new Set([uid]));
+      candidateSpeakers.get(cand).add(prev.userId);
+    }
+  }
+
+  buf.push({ userId: uid, text: clean, ts: now });
+  if (buf.length > 40) buf.splice(0, buf.length - 40);
+  repeatWindows.set(key, buf);
+
+  const reqSpeakers = Math.max(2, Number(minSpeakers) || 2);
+  const ranked = [...candidateSpeakers.entries()]
+    .filter(([, set]) => set.size >= reqSpeakers)
+    .sort((a, b) => b[1].size - a[1].size || b[0].length - a[0].length);
+
+  for (const [cand] of ranked) {
+    const lowerCand = cand.toLowerCase();
+    if (inFlightSniffs.has(lowerCand)) continue;
+    if (isMissCached(cand, missCacheHours)) continue;
+    if (findMatchingSlang(cand, readScopes, { maxHits: 1 }).length > 0) continue;
+    return cand;
+  }
+  return '';
+}
+
+/** 监听群重复词并在后台异步验真入库（不阻塞主消息流） */
+export function observeAndSniffGroupRepeat({
+  chatKey,
+  userId,
+  text,
+  readScopes = ['global'],
+  botKeywords = [],
+  windowMs = 45 * 60 * 1000,
+  minSpeakers = 2,
+  missCacheHours = 24,
+  searchFn,
+  timeoutMs = 3500,
+  log = () => {},
+}) {
+  const cand = observeGroupSlangRepeat({
+    chatKey,
+    userId,
+    text,
+    readScopes,
+    botKeywords,
+    windowMs,
+    minSpeakers,
+    missCacheHours,
+  });
+  if (!cand || typeof searchFn !== 'function') return null;
+
+  const lowerCand = cand.toLowerCase();
+  inFlightSniffs.add(lowerCand);
+  const promise = sniffAndLearnSlang({
+    candidate: cand,
+    searchFn,
+    timeoutMs,
+    log: (msg, ...rest) => log(`[slang:repeat] ${msg}`, ...rest),
+  })
+    .catch(() => null)
+    .finally(() => {
+      inFlightSniffs.delete(lowerCand);
+    });
+  return { candidate: cand, promise };
+}
+
+// ── 第 3 层：回复后后台异步偷学（可选开关，0ms 回复延迟，专抓嵌在长句里的新梗/群黑话） ──
+
+const lastAsyncLearnAt = new Map();
+
+function parseLlmSlangJson(raw) {
+  const s = String(raw || '').trim();
+  if (!s || /^none$/i.test(s)) return [];
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fenced ? fenced[1].trim() : s;
+  const arrMatch = body.match(/\[[\s\S]*\]/);
+  if (!arrMatch) return [];
+  try {
+    const parsed = JSON.parse(arrMatch[0]);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((it) => it && typeof it.term === 'string' && it.term.trim().length >= 2 && it.term.trim().length <= 16)
+      .slice(0, 2);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 后台异步复盘偷学：在主回复已经发出去之后悄悄执行（0ms 不拖慢回复）。
+ *   - 抽出消息里伪装成普通词的新网络梗或本群内部黑话；
+ *   - type="public" 的网络梗必须经过联网验真才写入 global（严防模型幻觉污染全局库）；
+ *   - type="group" 的本群自造黑话写入当前会话隔离区 writeScope，绝不跨外群泄露。
+ */
+export async function asyncLearnSlangWithLlm({
+  chatKey,
+  rawText,
+  recentMessages = [],
+  existingHits = [],
+  slangScope,
+  quickClient,
+  preferredModel = '',
+  searchFn,
+  timeoutMs = 3500,
+  cooldownMs = 30000,
+  log = () => {},
+}) {
+  if (!quickClient || typeof quickClient.quickText !== 'function') return [];
+  const text = String(rawText || '').trim();
+  if (text.length < 4 || /https?:\/\/|\[合并转发/.test(text)) return [];
+
+  const now = Date.now();
+  const prevAt = lastAsyncLearnAt.get(chatKey) || 0;
+  if (now - prevAt < Math.max(5000, Number(cooldownMs) || 30000)) return [];
+  lastAsyncLearnAt.set(chatKey, now);
+
+  const knownTerms = (existingHits || []).map((h) => h.term).filter(Boolean);
+  const recentCtx = (recentMessages || [])
+    .slice(-3)
+    .map((m) => `${m.sender || ''}: ${String(m.text || '').slice(0, 60)}`)
+    .join('\n');
+
+  const prompt =
+    '你是中文群聊热梗提取器。检查下面【当前消息】里是否藏着【尚未收录】的中文网络热梗、空耳、弹幕黑话或明显的群内自造黑话（哪怕没有引号、伪装成普通词语）。\n' +
+    '普通日常词语、人名、地名、正常提问一律忽略，宁缺毋滥。\n' +
+    (knownTerms.length > 0 ? `已收录（不要重复输出）：${knownTerms.join('、')}\n` : '') +
+    (recentCtx ? `【前文背景】\n${recentCtx}\n` : '') +
+    `【当前消息】\n${text.slice(0, 200)}\n` +
+    '如果没有新梗，只输出 NONE。\n' +
+    '如果有，最多抽 2 个，严格只输出 JSON 数组：[{"term":"原词","type":"public或group","meaning":"一句大白话含义","reply_guide":"一句口语怎么接茬"}]';
+
+  let rawOut = '';
+  try {
+    rawOut = await quickClient.quickText(prompt, { preferredModel, maxTokens: 240 });
+  } catch {
+    return [];
+  }
+
+  const items = parseLlmSlangJson(rawOut);
+  if (items.length === 0) return [];
+
+  const readScopes = slangScope?.readScopes || ['global'];
+  const writeScope = slangScope?.writeScope || 'private';
+  const learned = [];
+
+  for (const item of items) {
+    const term = String(item.term || '').trim();
+    if (term.length < 2 || !text.toLowerCase().includes(term.toLowerCase())) continue;
+    // 已收录则跳过
+    const already = findMatchingSlang(term, readScopes, { maxHits: 1 }).some(
+      (h) => h.term.toLowerCase() === term.toLowerCase()
+    );
+    if (already) continue;
+
+    const kind = String(item.type || 'public').trim().toLowerCase();
+    const meaning = String(item.meaning || '').trim().slice(0, 120);
+    const replyGuide = String(item.reply_guide || '').trim().slice(0, 100);
+
+    if (kind === 'group') {
+      if (!meaning) continue;
+      const saved = upsertSlangEntry({
+        term,
+        meaning,
+        replyGuide: replyGuide || '顺着群友的话茬自然调侃接一句',
+        source: 'llm_async',
+        scopeKey: writeScope,
+      });
+      if (saved?.ok && saved.entry) {
+        log(`[slang:async] 后台偷学群内黑话(${writeScope}): 「${term}」`);
+        learned.push(saved.entry);
+      }
+      continue;
+    }
+
+    // public 网络梗必须经过联网验真，防幻觉污染全局库
+    if (typeof searchFn === 'function' && !isMissCached(term, 24)) {
+      const verified = await sniffAndLearnSlang({
+        candidate: term,
+        searchFn,
+        timeoutMs,
+        log: (msg, ...rest) => log(`[slang:async] ${msg}`, ...rest),
+      });
+      if (verified) {
+        if (replyGuide) {
+          upsertSlangEntry({
+            term: verified.term,
+            meaning: verified.meaning,
+            replyGuide,
+            source: 'web',
+            scopeKey: 'global',
+          });
+          verified.replyGuide = replyGuide;
+        }
+        learned.push(verified);
+      }
+    }
+  }
+
+  return learned;
 }

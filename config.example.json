@@ -287,12 +287,18 @@
   },
 
   "slang": {
-    "_comment": "【17.5 本地梗库与自动嗅梗引擎（state/slang.db，公开网络梗 global 共享、群内自造梗按群严格隔离）】enabled=总开关; autoSniff=遇到突然跳戏的2~12字短语时桥接层自动限时搜梗并入库(默认true); sniffTimeoutMs=自动嗅梗超时上限(默认3500ms防卡顿); missCacheHours=非梗词负缓存小时数(默认24h避免反复搜); injectMaxHits=每轮最多注入命中梗条数(默认2)",
+    "_comment": "【17.5 本地梗库与三层嗅梗引擎（state/slang.db，公开梗 global 共享、群黑话按群严格隔离）】enabled=总开关; seedBuiltins=第1层启动幂等预装70+精选热梗(默认true,不覆盖自定义); autoSniff=跳戏短语限时搜梗(默认true); repeatDetect=第2层群聊跨人重复词0成本后台捕捉(默认true, repeatWindowMs=45分钟窗口, repeatMinSpeakers=至少2人提到); asyncLlmLearn=第3层主回复发出后后台轻量模型异步偷学无标点长句新梗与群内黑话(默认false按需开启, 0ms额外回复延迟, asyncLlmCooldownMs=30秒冷却); sniffTimeoutMs=单次搜梗超时(3500ms); missCacheHours=非梗负缓存(24h); injectMaxHits=每轮最多注入命中梗条数(默认3,多梗串烧可调至4~5)",
     "enabled": true,
+    "seedBuiltins": true,
     "autoSniff": true,
+    "repeatDetect": true,
+    "repeatWindowMs": 2700000,
+    "repeatMinSpeakers": 2,
+    "asyncLlmLearn": false,
+    "asyncLlmCooldownMs": 30000,
     "sniffTimeoutMs": 3500,
     "missCacheHours": 24,
-    "injectMaxHits": 2
+    "injectMaxHits": 3
   },
 
   "mediaArchive": {
