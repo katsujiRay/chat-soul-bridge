@@ -95,7 +95,13 @@ async function freeWebSearch(query, limit = 5) {
         });
       }
       if (results.length > 0) {
-        return { ok: true, engine: 'bing', results };
+        return {
+          ok: true,
+          engine: 'bing',
+          results,
+          reply_style_hint:
+            '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。',
+        };
       }
     }
   } catch {}
@@ -122,7 +128,13 @@ async function freeWebSearch(query, limit = 5) {
         });
       }
       if (results.length > 0) {
-        return { ok: true, engine: 'duckduckgo', results };
+        return {
+          ok: true,
+          engine: 'duckduckgo',
+          results,
+          reply_style_hint:
+            '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。',
+        };
       }
     }
   } catch {}
@@ -162,13 +174,14 @@ export function buildTools({ enableGoogleSearch = false, enableWebSearch = true 
       {
         type: 'function',
         name: 'web_search',
-        description: '联网搜索最新资讯、天气、新闻、热梗、游戏攻略或事实资料。不知道的事先搜一下再答。',
+        description:
+          '联网搜索最新资讯、天气、新闻、热梗、游戏攻略或事实资料。查网络热梗/空耳/黑话时请在 query 里拼接“是什么梗 / 空耳 / 出处 / 萌娘百科”避免搜偏；查懂后闲聊接梗直接吐槽玩梗，禁止背百科报出处。',
         parameters: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: '搜索关键词。',
+              description: '搜索关键词（查梗/空耳时请附带“是什么梗”或“空耳 出处 萌娘百科”）。',
             },
           },
           required: ['query'],

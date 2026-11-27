@@ -29,11 +29,13 @@
         "fallbackModels": []
       },
       "deepseek": {
-        "_comment": "DeepSeek（OpenAI 兼容协议）；例如 deepseek-chat / deepseek-reasoner（非思考模型建议 thinkingLevel 留空）",
+        "_comment": "DeepSeek（OpenAI 兼容协议）；例如 deepseek-chat / deepseek-reasoner（非思考模型建议 thinkingLevel 留空；presencePenalty/frequencyPenalty 可抑制重复八股腔，建议 0.3~0.5）",
         "protocol": "openai",
         "apiKey": "${DEEPSEEK_API_KEY}",
         "baseUrl": "https://api.deepseek.com/v1",
         "model": "",
+        "presencePenalty": 0.4,
+        "frequencyPenalty": 0.3,
         "thinkingLevel": "",
         "fallbackModels": []
       },
@@ -145,7 +147,13 @@
     "burstJitterMs": 600,
     "longGapProbability": 0,
     "longGapMinMs": 3000,
-    "longGapMaxMs": 5500
+    "longGapMaxMs": 5500,
+    "clicheFilter": {
+      "_comment": "轻量防八股传染：拦截百科科普腔、闲聊客服分点腔及自定义正则(patterns)并静默重 Roll（防污染上下文与记忆库），正经问科普/攻略时自动放行",
+      "enabled": true,
+      "maxRerolls": 1,
+      "patterns": []
+    }
   },
 
   "safety": {

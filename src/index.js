@@ -247,6 +247,8 @@ function resolveLlmConfig() {
       model: String(entry.model || '').trim(),
       fallbackModels: Array.isArray(entry.fallbackModels) ? entry.fallbackModels.filter(Boolean) : [],
       temperature: entry.temperature ?? llm.temperature ?? 1.0,
+      presencePenalty: entry.presencePenalty ?? llm.presencePenalty ?? null,
+      frequencyPenalty: entry.frequencyPenalty ?? llm.frequencyPenalty ?? null,
       maxTokens: entry.maxTokens ?? llm.maxTokens ?? 1024,
       thinkingLevel: String(entry.thinkingLevel || '').trim() || String(llm.thinkingLevel || '').trim(),
       thinkingBudget: Number(entry.thinkingBudget || 0) || Number(llm.thinkingBudget || 0),
@@ -272,6 +274,8 @@ function resolveLlmConfig() {
     model: String(legacy.model || '').trim(),
     fallbackModels: Array.isArray(legacy.fallbackModels) ? legacy.fallbackModels.filter(Boolean) : [],
     temperature: legacy.temperature ?? 1.0,
+    presencePenalty: legacy.presencePenalty ?? null,
+    frequencyPenalty: legacy.frequencyPenalty ?? null,
     maxTokens: legacy.maxTokens ?? 1024,
     thinkingLevel: legacy.thinkingLevel ?? '',
     thinkingBudget: legacy.thinkingBudget ?? 0,
@@ -531,6 +535,38 @@ function extractInlineReplyDirective(raw) {
     replyToMessageId: m[1],
     text: str.slice(m[0].length).trim(),
   };
+}
+
+const BUILTIN_CLICHE_ENCYCLOPEDIA_RE =
+  /(?:这个梗(?:出自|源于|来自)|原出处(?:是|为)|原曲(?:是|来自)|空耳(?:自|来自|源于)|科普一下|简单来说就是|综上所述|总而言之)/;
+const BUILTIN_CLICHE_BULLET_RE = /(?:^|\n)\s*(?:1[.、]|一、)[\s\S]{4,}\n\s*(?:2[.、]|二、)/;
+const ASKING_FOR_EXPLAIN_RE = /(?:科普|出处|啥意思|什么意思|怎么来的|原曲|原版|解释一下|来源|百科)/;
+const ASKING_FOR_LIST_RE = /(?:怎么|如何|推荐|对比|区别|列出|步骤|教程|名单|有哪些|总结|分析|几个|哪些)/;
+
+/** 轻量“防八股传染”检测：拦截百科科普腔、闲聊客服分点腔及用户自定义八股正则（正经问科普/攻略时自动放行） */
+function detectReplyCliche(replyText, incomingText, filterCfg = {}) {
+  if (filterCfg.enabled === false) return '';
+  const clean = extractInlineReplyDirective(replyText).text;
+  if (!clean) return '';
+  const userText = String(incomingText || '');
+
+  if (!ASKING_FOR_EXPLAIN_RE.test(userText) && BUILTIN_CLICHE_ENCYCLOPEDIA_RE.test(clean)) {
+    return '百科科普腔';
+  }
+  if (!ASKING_FOR_LIST_RE.test(userText) && BUILTIN_CLICHE_BULLET_RE.test(clean)) {
+    return '客服分点腔';
+  }
+  const customPatterns = Array.isArray(filterCfg.patterns) ? filterCfg.patterns : [];
+  for (const rawPat of customPatterns) {
+    const patStr = String(rawPat || '').trim();
+    if (!patStr) continue;
+    try {
+      if (new RegExp(patStr, 'i').test(clean)) {
+        return `自定义八股(${patStr.slice(0, 20)})`;
+      }
+    } catch {}
+  }
+  return '';
 }
 
 /**
@@ -1982,12 +2018,17 @@ async function handleMessage(event) {
       // 发送给模型当轮使用带实时状态/群背景的完整 promptText；
       // 落盘至 state/context.db 时只保留去噪后的本轮发言（防过期心情和重复群记录滚雪球污染上下文；全量消息仍完整保存在 state/memory.db 供 chat_recall 随时检索）
       const persistLine = `[${nowStr.slice(11, 16)}] ${currentLine}`;
-      const reply = await llm.chat(chatKey, {
+      const clicheCfg = config.reply?.clicheFilter || {};
+      const maxClicheRerolls =
+        clicheCfg.enabled === false ? 0 : Math.max(0, Math.min(2, Number(clicheCfg.maxRerolls ?? 1)));
+      const useDeferredSave = maxClicheRerolls > 0 && typeof llm.commitTurn === 'function';
+      let reply = await llm.chat(chatKey, {
         text: promptText,
         persistText: persistLine,
         images,
         toolContext,
         allowSkip: allowSkipTurn,
+        noSave: useDeferredSave,
       });
 
       if (allowSkipTurn && toolContext.skipped && !directSent) {
@@ -1996,6 +2037,41 @@ async function handleMessage(event) {
           log(`已入库 ${chatKey} (${senderName}, 主模型判断无关 [SKIP]): ${preview}`);
         }
         return;
+      }
+
+      if (useDeferredSave) {
+        if (reply && !directSent) {
+          for (let attempt = 0; attempt < maxClicheRerolls; attempt++) {
+            const clicheHit = detectReplyCliche(reply, rawTextForTrigger, clicheCfg);
+            if (!clicheHit) break;
+            log(
+              `[cliche-filter] 命中「${clicheHit}」(${chatKey})，静默重 Roll 第 ${attempt + 1}/${maxClicheRerolls} 次防污染记忆...`
+            );
+            const rerollPrompt =
+              activeLlm.protocol === 'agy-cli'
+                ? `（风格纠偏：上一版回复命中了「${clicheHit}」，不要发那一版；请直接换一句简短、自然、接地气的人设口语重新回复刚才那条消息，严禁科普出处或分点说教）`
+                : `${promptText}\n（风格纠偏：切勿输出「${clicheHit}」这类百科科普/客服八股腔，请直接用简短自然、接地气的人设口语回复）`;
+            try {
+              const rerolled = await llm.chat(chatKey, {
+                text: rerollPrompt,
+                persistText: persistLine,
+                images: activeLlm.protocol === 'agy-cli' ? [] : images,
+                toolContext,
+                allowSkip: false,
+                noSave: true,
+              });
+              if (rerolled && rerolled.trim()) {
+                reply = rerolled;
+              } else {
+                break;
+              }
+            } catch (rerollErr) {
+              log(`[cliche-filter] 重 Roll 失败，回退原回复 (${chatKey}):`, rerollErr?.message || rerollErr);
+              break;
+            }
+          }
+        }
+        llm.commitTurn(chatKey, persistLine, images, reply, toolContext);
       }
 
       if (allowSkipTurn && event.message_type === 'group') {

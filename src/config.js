@@ -19,6 +19,8 @@ export const DEFAULT_CONFIG = {
   llm: {
     active: 'gemini',
     temperature: 1.0,
+    presencePenalty: null,
+    frequencyPenalty: null,
     maxTokens: 1024,
     thinkingLevel: '',
     maxContextTurns: 20,
@@ -99,6 +101,11 @@ export const DEFAULT_CONFIG = {
     longGapProbability: 0,
     longGapMinMs: 3000,
     longGapMaxMs: 5500,
+    clicheFilter: {
+      enabled: true,
+      maxRerolls: 1,
+      patterns: [],
+    },
   },
   safety: {
     enabled: true,
@@ -249,10 +256,14 @@ export function loadConfig(rootDir = process.cwd(), configFilename = 'config.jso
     ...(isPlainObject(raw.paths) ? raw.paths : {}),
   });
 
-  const reply = mergeSection(DEFAULT_CONFIG.reply, {
-    ...(raw.maxImageBytes !== undefined ? { maxImageBytes: raw.maxImageBytes } : {}),
-    ...(isPlainObject(raw.reply) ? raw.reply : {}),
-  });
+  const replyRaw = isPlainObject(raw.reply) ? stripCommentKeys(raw.reply) : {};
+  const reply = {
+    ...mergeSection(DEFAULT_CONFIG.reply, {
+      ...(raw.maxImageBytes !== undefined ? { maxImageBytes: raw.maxImageBytes } : {}),
+      ...replyRaw,
+    }),
+    clicheFilter: mergeSection(DEFAULT_CONFIG.reply.clicheFilter, replyRaw.clicheFilter),
+  };
 
   const identity = mergeSection(DEFAULT_CONFIG.identity, raw.identity);
   if (Array.isArray(identity.aiBots)) {

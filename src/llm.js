@@ -286,7 +286,7 @@ function createGeminiClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false, noSave = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
@@ -318,7 +318,7 @@ function createGeminiClient({
             toolContext.skipped = true;
             return '';
           }
-          saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
+          if (!noSave) saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
           lastErr = err;
@@ -338,6 +338,8 @@ function createOpenAICompatibleClient({
   model,
   fallbackModels = [],
   temperature = 1.0,
+  presencePenalty = null,
+  frequencyPenalty = null,
   thinkingLevel = '',
   maxContextTurns = 20,
   tools = [],
@@ -360,6 +362,14 @@ function createOpenAICompatibleClient({
   const modelChain = [...new Set([model, ...fallbackModels].filter(Boolean))];
   let lastWorkingModel = '';
   const reasoningEffort = normalizeThinkingLevel(thinkingLevel);
+  const validPresencePenalty =
+    presencePenalty !== null && presencePenalty !== undefined && presencePenalty !== '' && Number.isFinite(Number(presencePenalty))
+      ? Number(presencePenalty)
+      : null;
+  const validFrequencyPenalty =
+    frequencyPenalty !== null && frequencyPenalty !== undefined && frequencyPenalty !== '' && Number.isFinite(Number(frequencyPenalty))
+      ? Number(frequencyPenalty)
+      : null;
 
   function toOpenAITools(list) {
     return list
@@ -382,6 +392,8 @@ function createOpenAICompatibleClient({
         model: targetModel,
         messages: working,
         temperature,
+        ...(validPresencePenalty !== null ? { presence_penalty: validPresencePenalty } : {}),
+        ...(validFrequencyPenalty !== null ? { frequency_penalty: validFrequencyPenalty } : {}),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         ...(fnTools.length > 0 ? { tools: fnTools } : {}),
       };
@@ -527,7 +539,7 @@ function createOpenAICompatibleClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false, noSave = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const fnTools = toOpenAITools(activeTools);
@@ -568,7 +580,7 @@ function createOpenAICompatibleClient({
             toolContext.skipped = true;
             return '';
           }
-          saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
+          if (!noSave) saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
           lastErr = err;
@@ -778,7 +790,7 @@ function createAnthropicClient({
       }
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false, noSave = false }) {
       const systemInstruction = getSystemInstruction(chatKey);
       const activeTools = typeof getTools === 'function' ? getTools(chatKey, toolContext) || [] : tools;
       const claudeTools = toClaudeTools(activeTools);
@@ -809,7 +821,7 @@ function createAnthropicClient({
             toolContext.skipped = true;
             return '';
           }
-          saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
+          if (!noSave) saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
           return replyText;
         } catch (err) {
           lastErr = err;
@@ -1085,7 +1097,7 @@ function createAgyCliClient({
       // agy-cli 模式下跳过后台额外起进程生成图注，避免多占一轮 CLI 额度
       return '';
     },
-    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false }) {
+    async chat(chatKey, { text, persistText, images = [], toolContext = {}, allowSkip = false, noSave = false }) {
       const session = ensureSession(chatKey);
       const { images: normImgs, gifNotes } = normalizeImagesForLlm(images);
       const tempImgPaths = writeTempImages(normImgs);
@@ -1164,7 +1176,7 @@ function createAgyCliClient({
           toolContext.skipped = true;
           return '';
         }
-        saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
+        if (!noSave) saveTurnToLocalContext(chatKey, persistText ?? text, images, replyText, toolContext, maxContextTurns);
         return replyText;
       } catch (err) {
         console.warn(`[llm:${providerName}] agy-cli 调用失败:`, err?.message || err);
@@ -1184,14 +1196,21 @@ function createAgyCliClient({
 export function createLlmClient(options) {
   const protocol = normalizeProtocol(options.protocol || options.provider);
   const providerName = options.providerName || protocol;
+  let client;
   if (protocol === 'gemini') {
-    return createGeminiClient({ ...options, providerName });
+    client = createGeminiClient({ ...options, providerName });
+  } else if (protocol === 'anthropic') {
+    client = createAnthropicClient({ ...options, providerName });
+  } else if (protocol === 'agy-cli') {
+    client = createAgyCliClient({ ...options, providerName });
+  } else {
+    client = createOpenAICompatibleClient({ ...options, providerName });
   }
-  if (protocol === 'anthropic') {
-    return createAnthropicClient({ ...options, providerName });
-  }
-  if (protocol === 'agy-cli') {
-    return createAgyCliClient({ ...options, providerName });
-  }
-  return createOpenAICompatibleClient({ ...options, providerName });
+  const maxTurns = options.maxContextTurns ?? 20;
+  return {
+    ...client,
+    commitTurn(chatKey, persistText, images, replyText, toolContext) {
+      saveTurnToLocalContext(chatKey, persistText, images, replyText, toolContext, maxTurns);
+    },
+  };
 }
