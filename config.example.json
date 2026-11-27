@@ -204,8 +204,11 @@
   },
 
   "emotion": {
-    "_comment": "【12. 好感度与心情双向联动引擎（state/emotion.json）】好感(0~100,仅管理员私聊): initialAffection=新建初始分(50); affectionFloor=闲置衰减保底(25); passiveStep/passiveDailyCap=每条被动+0.05/日封顶+0.5(10条); dailyNormalGainCap=每日普通总上限+2(含被动与哄好奖励); decayAfterHours/decayPerDay=24h无互动后每天惰性-1; affectionCooldownMinutes=主动调整冷却(60分); milestoneCooldownHours=里程碑(+3~+5)冷却(168小时=7天); 心情(-100~+100,全局同步): moodDecayAfterMinutes=前30分钟不淡; moodDecayPerHour=每小时线性回归8点; moodCooldownMinutes=5分钟冷却; moodMaxAdjustPerCall=单次上限±40; moodBaselineFactor=好感基线偏移系数0.2",
+    "_comment": "【12. 好感度与心情双向联动引擎（state/emotion.json）】style=好感六档表达风格(balanced中性自然/direct直球黏人/tsundere傲娇拉扯); syncMoodToExternalGroups=外群脱敏同步明显情绪底色(强制抹除私聊原因绝不泄密); runtimeMoodHint=私聊与亲密小群附1行防忘调心情轻提醒; 注入Prompt彻底隐藏阿拉伯分数防出戏。好感(0~100,仅管理员私聊): initialAffection=50; affectionFloor=25; passiveStep=0.05/日封顶0.5; dailyNormalGainCap=2; 24h闲置每天-1; 主动冷却60分; 里程碑168h; 心情(-100~+100): 30分钟后每小时回归8点, 5分钟冷却, 基线偏移0.2",
     "enabled": true,
+    "style": "balanced",
+    "syncMoodToExternalGroups": true,
+    "runtimeMoodHint": true,
     "initialAffection": 50,
     "affectionFloor": 25,
     "passiveStep": 0.05,

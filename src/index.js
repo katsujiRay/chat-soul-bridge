@@ -1895,8 +1895,15 @@ async function handleMessage(event) {
         const emoBlock = formatEmotionForPrompt();
         if (emoBlock) contextPrefix += `\n${emoBlock}`;
       } else if (isTrustedGroup && config.emotion?.enabled !== false) {
-        const moodBlock = formatMoodForPrompt({ inGroup: true });
+        const moodBlock = formatMoodForPrompt({ inGroup: true, includeHint: true });
         if (moodBlock) contextPrefix += `\n${moodBlock}`;
+      } else if (
+        event.message_type === 'group' &&
+        config.emotion?.enabled !== false &&
+        config.emotion?.syncMoodToExternalGroups !== false
+      ) {
+        const extMoodBlock = formatMoodForPrompt({ inGroup: true, maskReason: true, includeHint: false });
+        if (extMoodBlock) contextPrefix += `\n${extMoodBlock}`;
       }
       if ((isOwnerPrivate || isTrustedGroup) && config.todos?.enabled !== false) {
         const todoLine = formatTodosForPrompt(Math.max(1, Number(config.todos?.injectMaxItems ?? 5)));

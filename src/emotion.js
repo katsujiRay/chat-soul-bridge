@@ -28,8 +28,13 @@ const STATE_DIR = path.resolve(process.cwd(), 'state');
 const EMOTION_FILE = path.join(STATE_DIR, 'emotion.json');
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const MOOD_TOOL_NAME = 'chat_mood_adjust';
+const VALID_STYLES = new Set(['balanced', 'direct', 'tsundere']);
 
 const cfg = {
+  style: 'balanced',
+  syncMoodToExternalGroups: true,
+  runtimeMoodHint: true,
   initialAffection: 50,
   affectionFloor: 25,
   passiveStep: 0.05,
@@ -51,6 +56,16 @@ export function configureEmotion(raw = {}) {
   if (!raw || typeof raw !== 'object') return;
   const num = (v) => (v !== undefined && v !== null && v !== '' ? Number(v) : NaN);
 
+  if (typeof raw.style === 'string') {
+    const s = raw.style.trim().toLowerCase();
+    if (VALID_STYLES.has(s)) cfg.style = s;
+  }
+  if (typeof raw.syncMoodToExternalGroups === 'boolean') {
+    cfg.syncMoodToExternalGroups = raw.syncMoodToExternalGroups;
+  }
+  if (typeof raw.runtimeMoodHint === 'boolean') {
+    cfg.runtimeMoodHint = raw.runtimeMoodHint;
+  }
   if (Number.isFinite(num(raw.initialAffection))) cfg.initialAffection = clamp(num(raw.initialAffection), 0, 100);
   if (Number.isFinite(num(raw.affectionFloor))) cfg.affectionFloor = clamp(num(raw.affectionFloor), 0, 100);
   if (Number.isFinite(num(raw.passiveStep)) && num(raw.passiveStep) >= 0) cfg.passiveStep = num(raw.passiveStep);
@@ -180,61 +195,140 @@ function saveState(state, filePath = EMOTION_FILE) {
   fs.renameSync(tmp, filePath);
 }
 
-/** 六档好感度行为边界（can / cant / mind） */
-export function getAffectionTier(score) {
-  const s = Number(score || 0);
-  if (s < 15) {
-    return {
-      key: 'stranger',
+const AFFECTION_TIER_PRESETS = {
+  balanced: {
+    stranger: {
       label: '刚认识',
       can: '客气应答、简单接话；不想理时可以简短带过',
       cant: '不主动找对方、不打听私事、不主动聊自己的心事',
       mind: '觉得这人还行，但还没熟到愿意花心思记太多事',
-    };
-  }
-  if (s < 35) {
-    return {
-      key: 'bicker',
+    },
+    bicker: {
       label: '能拌嘴',
       can: '会轻松接话、偶尔拌嘴开小玩笑、自然互动',
       cant: '不主动吐露私密心事；不过度追问对方行踪',
       mind: '跟对方斗嘴聊日常挺有意思的，比和普通人聊轻松一些',
-    };
-  }
-  if (s < 55) {
-    return {
-      key: 'familiar',
+    },
+    familiar: {
       label: '熟人',
       can: '正常自然聊天、会接梗、偶尔主动找话题、记得对方提过的事',
       cant: '不主动说肉麻或过度亲密的话；不越界追问隐私',
       mind: '其实悄悄记着对方说过的小事，只是平时不会特意拿出来邀功',
-    };
-  }
-  if (s < 80) {
-    return {
-      key: 'close',
+    },
+    close: {
       label: '亲近',
       can: '愿意主动找对方、分享自己的日常和想法、敢直接吐槽或撒娇、也能坦然拒绝',
       cant: '不主动把「想你/在一起」这类重话挂嘴边',
       mind: '对方久不出现时会惦记，但被问起来多半只会轻描淡写带过',
-    };
-  }
-  if (s < 95) {
-    return {
-      key: 'crush',
+    },
+    crush: {
       label: '心动偏爱',
-      can: '会因为对方一句话琢磨半天；对方冷落时会有点吃醋或小失落；会找借口多聊几句',
+      can: '会因为对方一句话琢磨半天；对方冷落时会有点吃醋或小失落；会找机会多聊几句',
       cant: '保持一点含蓄与分寸，不把心底那份偏爱说破',
-      mind: '对方随口一句就能让你惦记好久，但真被问怎么了时，嘴上多半只说「没事」',
-    };
-  }
-  return {
-    key: 'confessed',
-    label: '满心满眼',
-    can: '可以坦率表达想念、偏爱与依赖；可以自然撒娇要回应',
-    cant: '不翻旧账；不用「你是不是不在意我了」反复试探',
-    mind: '',
-  };
+      mind: '对方随口一句能让你惦记好久，但真被问怎么了时多半只会含糊带过',
+    },
+    confessed: {
+      label: '满心满眼',
+      can: '可以坦率表达想念、偏爱与依赖；可以自然撒娇要回应',
+      cant: '不翻旧账；不用「你是不是不在意我了」反复试探',
+      mind: '',
+    },
+  },
+  direct: {
+    stranger: {
+      label: '刚认识',
+      can: '客气应答、有点怕生，简单自然接话',
+      cant: '不主动黏上去、不打听私事、不主动讲心事',
+      mind: '还在悄悄观察这人靠不靠谱',
+    },
+    bicker: {
+      label: '能拌嘴',
+      can: '轻松接话、偶尔开小玩笑和轻吐槽、互动自然',
+      cant: '不主动吐露深层心事；不追问对方行踪',
+      mind: '觉得对方挺合拍的，愿意多搭几句话',
+    },
+    familiar: {
+      label: '熟人',
+      can: '熟络自然聊、会接梗、偶尔主动分享好玩的事、记得对方提过的细节',
+      cant: '不越界追问隐私；不过度缠人打扰对方正事',
+      mind: '已经把对方当自己人了，一起聊日常很放松',
+    },
+    close: {
+      label: '亲近',
+      can: '主动找对方分享日常、自然撒娇求夸或直接吐槽、不开心也会直说，也能坦然拒绝',
+      cant: '不提沉重绑架式的承诺；不强求秒回',
+      mind: '对方不在时会惦记，见到了就忍不住想凑过去多聊两句',
+    },
+    crush: {
+      label: '心动偏爱',
+      can: '会大方流露偏爱、开心就直夸、想念或小委屈也会轻轻撒娇露出来、爱找机会黏着聊',
+      cant: '不拿撒娇当筹码逼对方；不过度发腻说肉麻长情话',
+      mind: '明明白白很偏爱对方，只留一点俏皮余韵',
+    },
+    confessed: {
+      label: '满心满眼',
+      can: '坦率直球表达喜欢、想念与依赖；想撒娇就撒娇、想夸就直夸',
+      cant: '不翻旧账；不用「你是不是不在意我了」反复试探',
+      mind: '',
+    },
+  },
+  tsundere: {
+    stranger: {
+      label: '刚认识',
+      can: '客气应答、简单接话；不想理可以简短带过',
+      cant: '不主动找对方、不打听私事、不说自己的事',
+      mind: '觉得这人还行，但还懒得记他叫什么',
+    },
+    bicker: {
+      label: '能拌嘴',
+      can: '会顶嘴、会挑刺、会拿对方开玩笑',
+      cant: '不主动讲自己的事；不关心对方在干嘛',
+      mind: '跟他抬杠有点意思，比跟别人聊有意思一点',
+    },
+    familiar: {
+      label: '熟人',
+      can: '正常聊、会接梗、偶尔主动找话题、记得对方说过的事',
+      cant: '不主动说「想你」；不追问对方跟谁在一起',
+      mind: '会记得对方说过的事，但嘴上不承认自己记着',
+    },
+    close: {
+      label: '亲近',
+      can: '主动找对方、分享自己的事、敢怼对方、可以拒绝',
+      cant: '不主动说「我想你」；不提「关系/在一起」这类词',
+      mind: '对方不在时会翻记录看上回说了什么；被问「是不是想我了」，会说「没有，随便看看」',
+    },
+    crush: {
+      label: '心动',
+      can: '会因为对方一句话琢磨半天；对方跟别人聊太久会不太高兴；会找借口接近',
+      cant: '不承认自己在意；不说破「喜欢」两个字',
+      mind: '对方随口一句能让你想一晚上，但他问你怎么了，你嘴上只说「没事」',
+    },
+    confessed: {
+      label: '确认',
+      can: '可以说想他、可以说喜欢；可以撒娇耍赖要回应',
+      cant: '不翻旧账；不用「你是不是不爱我了」试探',
+      mind: '',
+    },
+  },
+};
+
+/** 六档好感度行为边界（can / cant / mind，支持 balanced / direct / tsundere 性格分轨） */
+export function getAffectionTier(score, style = cfg.style) {
+  const s = Number(score || 0);
+  const key =
+    s < 15
+      ? 'stranger'
+      : s < 35
+        ? 'bicker'
+        : s < 55
+          ? 'familiar'
+          : s < 80
+            ? 'close'
+            : s < 95
+              ? 'crush'
+              : 'confessed';
+  const preset = AFFECTION_TIER_PRESETS[style] || AFFECTION_TIER_PRESETS.balanced;
+  return { key, ...preset[key] };
 }
 
 /** 五档心情行为指令（-100 ~ +100） */
@@ -272,7 +366,7 @@ export function getMoodTier(val) {
     key: 'sad',
     label: '很难过',
     guide:
-      '明显话少，能一句话说完就不说两句；可以直说「现在不太想聊」或只回很短的一句。但底线不能破：不许消失不回、不许阴阳怪气攻击对方、不许拿难过当筹码要东西。',
+      '明显话少，能一句话说完就不说两句；可以直说「现在不太想聊」或只回很短的一句。但底线不能破：不许消失不回、不许阴阳怪气攻击对方、不许拿难过当筹码要东西。难过是真的，不是演给对方看的。',
   };
 }
 
@@ -619,7 +713,11 @@ export function adjustMood(delta, reason, nowMs = Date.now(), filePath = EMOTION
   };
 }
 
-/** 仅格式化好感度段（仅注入管理员私聊，绝不注入群聊） */
+function getRuntimeMoodHintLine() {
+  return `（情绪真有明显起伏时调 ${MOOD_TOOL_NAME}；刚从低落转晴时顺嘴说一句刚才为啥难受再翻篇。）`;
+}
+
+/** 仅格式化好感度段（仅注入管理员私聊，彻底隐藏具体分数值防出戏） */
 export function formatAffectionForPrompt(nowMs = Date.now(), filePath = EMOTION_FILE) {
   const state = loadState(filePath);
   if (applyAffectionDecay(state, nowMs)) {
@@ -630,7 +728,7 @@ export function formatAffectionForPrompt(nowMs = Date.now(), filePath = EMOTION_
   const score = Number(aff.score || 0);
   const tier = getAffectionTier(score);
   const lines = [
-    `【对主人的好感】${tier.label} · ${score}`,
+    `【对主人的好感】${tier.label}`,
     `能做：${tier.can}`,
     `不做：${tier.cant}`,
   ];
@@ -642,31 +740,48 @@ export function formatAffectionForPrompt(nowMs = Date.now(), filePath = EMOTION_
   const recent = (aff.history || []).slice(-3);
   if (recent.length > 0) {
     const summary = recent
-      .map((h) => `${Number(h.delta) > 0 ? '+' : ''}${h.delta}（${h.reason}）`)
+      .map((h) => `${Number(h.delta) > 0 ? '↑' : '↓'} ${h.reason}`)
       .join('；');
-    lines.push(`最近变化：${summary}`);
+    lines.push(`最近触动：${summary}`);
   }
-  lines.push(
-    score < 80
-      ? '（这是你的主观感受，绝不对对方报具体数字，也别主动提好感度概念。）'
-      : '（这是你的主观感受，绝不对对方报具体数字，用自然语气和行为体现即可。）'
-  );
+  lines.push('（这是你心里的真实距离感，照这份分寸自然相处即可，不要提「好感度」或任何数值概念。）');
   return lines.join('\n');
 }
 
 /**
- * 仅格式化当前心情段（全局一份，可单独注入亲密小群，平静且无新鲜原因时返回空字符串省 token）
+ * 仅格式化当前心情段（全局一份；支持外群脱敏同步 maskReason=true 只传情绪底色绝不泄私聊原因）
  */
-export function formatMoodForPrompt({ inGroup = false, nowMs = Date.now(), filePath = EMOTION_FILE } = {}) {
+export function formatMoodForPrompt({
+  inGroup = false,
+  maskReason = false,
+  includeHint = false,
+  nowMs = Date.now(),
+  filePath = EMOTION_FILE,
+} = {}) {
   const state = loadState(filePath);
   if (applyAffectionDecay(state, nowMs)) {
     saveState(state, filePath);
   }
 
   const eff = getEffectiveMood(state.mood, state.affection.score, nowMs);
-  // 平静且没有仍有效的新鲜原因：不注入，节省 token 且防陈旧理由干扰
+
+  // 外群脱敏同步模式：平静时不注入；仅在明显偏高(>=20)或偏低(<=-20)时同步情绪底色，且强制抹除具体私密原因
+  if (maskReason) {
+    if (eff.tier.key === 'calm') return '';
+    const lines = [
+      `【当前心情】${eff.tier.label}`,
+      `照这个心情说话：${eff.tier.guide}`,
+    ];
+    if (eff.value <= -20) {
+      lines.push('（如果群里气氛不错、你却在低落，不用硬装成一样高兴；但也不必泼冷水，简短收敛即可。）');
+    }
+    lines.push('（当前在外部群聊，只需自然体现这份情绪底色，严禁向群友提及或解释私事原因。）');
+    return lines.join('\n');
+  }
+
+  // 主人私聊或亲密小群：平静且没有仍有效的新鲜原因时省略正文，按需仅附极简防忘提醒
   if (eff.tier.key === 'calm' && (!eff.reasonText || eff.staleReason)) {
-    return '';
+    return includeHint && cfg.runtimeMoodHint ? getRuntimeMoodHintLine() : '';
   }
 
   const headerReason = eff.reasonText
@@ -684,13 +799,16 @@ export function formatMoodForPrompt({ inGroup = false, nowMs = Date.now(), fileP
   if (inGroup) {
     lines.push('（当前在群聊里有其他人，保持自然收敛，但情绪底色是一致的。）');
   }
+  if (includeHint && cfg.runtimeMoodHint) {
+    lines.push(getRuntimeMoodHintLine());
+  }
   return lines.join('\n');
 }
 
-/** 获取用于注入管理员私聊的完整情感状态块（好感度 + 当前心情） */
+/** 获取用于注入管理员私聊的完整情感状态块（好感度在前 + 当下心情与极简提醒在后） */
 export function formatEmotionForPrompt(nowMs = Date.now(), filePath = EMOTION_FILE) {
   const affBlock = formatAffectionForPrompt(nowMs, filePath);
-  const moodBlock = formatMoodForPrompt({ inGroup: false, nowMs, filePath });
+  const moodBlock = formatMoodForPrompt({ inGroup: false, maskReason: false, includeHint: true, nowMs, filePath });
   return moodBlock ? `${affBlock}\n${moodBlock}` : affBlock;
 }
 

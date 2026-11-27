@@ -139,6 +139,9 @@ export const DEFAULT_CONFIG = {
   },
   emotion: {
     enabled: true,
+    style: 'balanced',
+    syncMoodToExternalGroups: true,
+    runtimeMoodHint: true,
     initialAffection: 50,
     affectionFloor: 25,
     passiveStep: 0.05,
