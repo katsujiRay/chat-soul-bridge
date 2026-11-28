@@ -307,6 +307,19 @@
     "injectMaxHits": 3
   },
 
+  "expression": {
+    "_comment": "【17.6 动态表情包与小黄脸/Emoji 触发引擎（src/expression.js）】按每轮气氛与标签匹配度动态决定是否建议配图([meme:名字])或点缀emoji/小黄脸，严肃求助或极低落场景自动0字节静音；faceEnabled=双向解析[doge]/[吃瓜]等OneBot原生小黄脸; memeBaseChance=基础配图概率(0.28)+标签命中加成(0.45); memeCooldownTurns/Ms=防刷屏冷却(3轮且2分钟); emojiChance=自然点缀emoji/小黄脸概率(0.38)",
+    "enabled": true,
+    "faceEnabled": true,
+    "memeEnabled": true,
+    "memeBaseChance": 0.28,
+    "memeTagMatchBoost": 0.45,
+    "memeCooldownTurns": 3,
+    "memeCooldownMs": 120000,
+    "emojiChance": 0.38,
+    "maxSuggestMemes": 6
+  },
+
   "mediaArchive": {
     "_comment": "【18. 图片记忆归档（state/media/）】enabled=收图/画图自动本地归档防 图片外链过期; autoCaption=发完回复后异步补写简短图注进 memory.db 供 chat_recall 搜图; captionModel=可选轻量视觉模型ID(留空复用当前模型); maxFiles/maxTotalMB=LRU 自动清理上限",
     "enabled": true,

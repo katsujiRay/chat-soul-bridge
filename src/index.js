@@ -27,6 +27,15 @@ import {
   recordDailyPassiveInteraction,
 } from './emotion.js';
 import { configureForward, resolveForwardMessage } from './forward.js';
+import {
+  buildOneBotMessageWithFaces,
+  decideExpressionHint,
+  extractInlineMemeDirectives,
+  formatIncomingFace,
+  recordMemeSent,
+  resolveLocalMemeFilename,
+  stripInlineMemeTag,
+} from './expression.js';
 import { detectImageMime } from './gif.js';
 import {
   formatKnownUsersNote,
@@ -45,7 +54,7 @@ import {
 import { resolveImageGenConfig } from './image-gen.js';
 import { createLlmClient } from './llm.js';
 import { archiveImagesForMessage, ensureMediaArchiveDir } from './media-archive.js';
-import { cacheMessageImages } from './meme.js';
+import { cacheMessageImages, readMemeBase64 } from './meme.js';
 import {
   ensureDiaryDir,
   findCrossChatRecentMatches,
@@ -590,13 +599,16 @@ function detectReplyCliche(replyText, incomingText, filterCfg = {}) {
  */
 async function sendReply(event, text, { replyToMessageId = '' } = {}) {
   const parsed = extractInlineReplyDirective(text);
+  const memeParsed = extractInlineMemeDirectives(parsed.text);
   const maxBurst = Math.max(1, Math.min(8, Number(config.reply?.maxBurstParts ?? 4)));
   const maxChars = Math.max(0, Number(config.safety?.maxMessageChars ?? 500));
-  const parts = splitBurstMessages(parsed.text, maxBurst, maxChars);
-  if (parts.length === 0) return '';
+  const parts = splitBurstMessages(memeParsed.text, maxBurst, maxChars);
+  const memeQueries = config.expression?.memeEnabled !== false ? memeParsed.memeQueries : [];
+  if (parts.length === 0 && memeQueries.length === 0) return '';
 
   const rawReplyId = String(replyToMessageId || parsed.replyToMessageId || '').trim();
   const replyIdStr = /^-?\d+$/.test(rawReplyId) ? rawReplyId : '';
+  const enableFace = config.expression?.enabled !== false && config.expression?.faceEnabled !== false;
   const chatKey =
     event.message_type === 'group' ? `group:${event.group_id}` : `private:${event.user_id}`;
   const botName = getPersona().name;
@@ -637,13 +649,10 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
       }
     }
 
-    const payloadMsg =
-      i === 0 && replyIdStr
-        ? [
-            { type: 'reply', data: { id: replyIdStr } },
-            { type: 'text', data: { text: parts[i] } },
-          ]
-        : parts[i];
+    const payloadMsg = buildOneBotMessageWithFaces(parts[i], {
+      replyId: i === 0 ? replyIdStr : '',
+      enableFace,
+    });
 
     let res;
     try {
@@ -692,6 +701,52 @@ async function sendReply(event, text, { replyToMessageId = '' } = {}) {
       if (r && !r.ok && !r.skipped) log('写入记忆库失败(发):', r.error || r);
     });
   }
+
+  // 若回复末尾带了零轮次内联表情包标签 [meme:名字]，紧跟文字气泡自动发出真图
+  if (memeQueries.length > 0) {
+    const resolvedFile = resolveLocalMemeFilename(memeDir, memeQueries[0]);
+    if (resolvedFile) {
+      const read = readMemeBase64(memeDir, resolvedFile);
+      if (read.ok) {
+        if (parts.length > 0 && useTypingDelay) {
+          await sleepInterruptible(650, shouldInterruptTyping);
+        }
+        const imgSegs = [{ type: 'image', data: { file: read.base64 } }];
+        try {
+          const mRes =
+            event.message_type === 'private'
+              ? await sendOneBot('send_private_msg', { user_id: event.user_id, message: imgSegs })
+              : await sendOneBot('send_group_msg', { group_id: event.group_id, message: imgSegs });
+          rememberMyMessageId(mRes);
+          recordMemeSent(chatKey);
+          const mId = mRes?.data?.message_id != null ? String(mRes.data.message_id) : '';
+          if (mId) lastMsgId = mId;
+          recordRecentMessage(chatKey, {
+            message_id: mId || 'self',
+            time: formatNow().slice(11, 16),
+            user_id: String(config.snowluma.botId || ''),
+            sender: `我·${botName}`,
+            text: `[表情包: ${read.filename}]`,
+          });
+          saveChatMessageToDb({
+            scope: event.message_type === 'group' ? 'group' : 'private',
+            groupId: event.message_type === 'group' ? event.group_id : null,
+            messageId: mId,
+            who: config.snowluma.botId,
+            whoName: botName,
+            isSelf: true,
+            isOwner: false,
+            isTriggered: true,
+            text: `[表情包: ${read.filename}]`,
+          }).catch(() => {});
+          log(`附带表情包 ${chatKey}: ${read.filename}`);
+        } catch (err) {
+          log(`发送内联表情包失败 (${chatKey}, ${read.filename}): ${err?.message || err}`);
+        }
+      }
+    }
+  }
+
   return lastMsgId;
 }
 
@@ -725,6 +780,9 @@ function parseMessage(event) {
     for (const seg of event.message) {
       if (seg.type === 'text' && seg.data?.text) {
         textParts.push(seg.data.text);
+      } else if (seg.type === 'face' && seg.data?.id != null) {
+        const faceLabel = formatIncomingFace(seg.data.id);
+        if (faceLabel) textParts.push(faceLabel);
       } else if (seg.type === 'at' && seg.data?.qq != null) {
         const atUid = String(seg.data.qq);
         if (atUid === selfId) {
@@ -2109,6 +2167,22 @@ async function handleMessage(event) {
         }
       }
 
+      // 动态判断本轮需不需要配 meme 或点缀 emoji/原生小黄脸（严肃/冷却期 0 字节不注入）
+      if (config.expression?.enabled !== false && rawTextForTrigger) {
+        const curMood = config.emotion?.enabled !== false ? getEmotionSnapshot().mood : 0;
+        const exprHint = decideExpressionHint({
+          chatKey,
+          rawText: rawTextForTrigger,
+          slangHits,
+          mood: curMood,
+          memeDir,
+          expressionConfig: config.expression,
+        });
+        if (exprHint) {
+          contextPrefix += `\n${exprHint}`;
+        }
+      }
+
       let replyHint = '';
       if (replyId) {
         if (quotedMessage && quotedMessage.text) {
@@ -2244,7 +2318,7 @@ async function handleMessage(event) {
             }
           }
         }
-        llm.commitTurn(chatKey, persistLine, images, reply, toolContext);
+        llm.commitTurn(chatKey, persistLine, images, stripInlineMemeTag(reply), toolContext);
       }
 
       if (allowSkipTurn && event.message_type === 'group') {

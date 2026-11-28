@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { recallFromDb, saveChatMessageToDb, saveDiaryToDb } from './db.js';
 import { adjustAffection, adjustMood } from './emotion.js';
+import { recordMemeSent } from './expression.js';
 import { resolveForwardMessage, sendForwardMessages } from './forward.js';
 import { detectImageMime } from './gif.js';
 import { generateImage } from './image-gen.js';
@@ -1550,6 +1551,7 @@ export function createToolExecutor({
           } else {
             await sendOneBot('send_private_msg', { user_id: event.user_id, message: segments });
           }
+          recordMemeSent(chatKey);
           recordRecentMessage(chatKey, {
             message_id: 'self',
             time: formatNow().slice(11, 16),
