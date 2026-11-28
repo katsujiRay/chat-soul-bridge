@@ -71,7 +71,7 @@ function stripHtml(html) {
 }
 
 const SEARCH_STYLE_HINT =
-  '查懂意思即可；若是在闲聊或接梗，请直接用人设口语顺嘴玩梗或吐槽，严禁像百科一样报出处、歌名、番名或分点科普。';
+  '查懂后若是闲聊接梗，请直接钻进梗里接下一拍（接下半句/顺着演/反客为主吐槽），严禁站在戏外点评“哈哈你在玩梗/经典老梗”，也严禁像百科一样报出处、歌名、番名或分点科普。';
 const SEARCH_MEME_HINT_RE = /(?:是什么梗|什么梗|空耳|萌娘百科|网络流行语|网络热词|网络用语|弹幕|B站|bilibili|出自.*(?:歌|曲|番|动漫|动画|游戏)|梗出处|梗百科)/i;
 const SEARCH_FACTUAL_RE = /(?:天气|价格|多少钱|攻略|教程|新闻|怎么|如何|几点|星期几|官网|下载|安装|报错|bug|翻译|计算|地图|股价|汇率)/i;
 
@@ -113,6 +113,37 @@ function isSearchResultsRelevant(query, results) {
   return false;
 }
 
+/** 从萌娘百科正文中定向截取命中原词（如 === 虎纹鲨鱼 ===）附近的玩梗弹药段落，避免只剩百科头 */
+function extractMoegirlMemeWindow(fullText, term, maxChars = 280) {
+  const raw = String(fullText || '').replace(/\r/g, '');
+  if (!raw.trim()) return '';
+  const cleanTerm = String(term || '').trim();
+  const norm = (s) => s.replace(/={2,}\s*[^=\n]+?\s*={2,}/g, ' ').replace(/\s+/g, ' ').trim();
+
+  if (cleanTerm) {
+    // 优先命中专门的小节标题（如 === 虎纹鲨鱼 ===）
+    const secRe = new RegExp(`={2,}\\s*[^=\\n]*${cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^=\\n]*={2,}`, 'i');
+    const secMatch = secRe.exec(raw);
+    if (secMatch) {
+      const afterHeading = raw.slice(secMatch.index + secMatch[0].length);
+      const nextSec = afterHeading.search(/\n==[^=]/);
+      const sectionBody = nextSec >= 0 ? afterHeading.slice(0, nextSec) : afterHeading;
+      const cleaned = norm(sectionBody);
+      if (cleaned.length >= 16) return cleaned.slice(0, maxChars);
+    }
+
+    // 其次在全文中定位首次出现原词的位置（避开开头的唱片/曲目表）
+    const idx = raw.toLowerCase().indexOf(cleanTerm.toLowerCase());
+    if (idx >= 80) {
+      const start = Math.max(0, raw.lastIndexOf('\n', idx) + 1);
+      const cleaned = norm(raw.slice(start, idx + maxChars + 80));
+      if (cleaned.length >= 16) return cleaned.slice(0, maxChars);
+    }
+  }
+
+  return norm(raw).slice(0, maxChars);
+}
+
 async function searchMoegirl(query, limit = 3) {
   const cleanTerm = String(query || '')
     .replace(/(?:是什么梗|什么梗|空耳|萌娘百科|出处|网络流行语|热梗|黑话)/gi, ' ')
@@ -121,12 +152,13 @@ async function searchMoegirl(query, limit = 3) {
   if (cleanTerm.length < 2 || cleanTerm.length > 24) return null;
 
   const ua = { 'User-Agent': 'chat-soul-bridge/1.0' };
+  // 精确词条/重定向请求拉前 1200 字纯文本（不限 exintro），确保能挖出正文里的「相关的梗 / 空耳下半句」弹药
   const exactUrl =
     `https://zh.moegirl.org.cn/api.php?action=query&titles=${encodeURIComponent(cleanTerm)}&redirects=1` +
-    `&prop=extracts|info&exintro=1&explaintext=1&exchars=220&inprop=url&format=json`;
+    `&prop=extracts|info&explaintext=1&exchars=1200&inprop=url&format=json`;
   const genUrl =
     `https://zh.moegirl.org.cn/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(cleanTerm)}&gsrlimit=${limit}` +
-    `&prop=extracts|info&exintro=1&explaintext=1&exchars=220&inprop=url&redirects=1&format=json`;
+    `&prop=extracts|info&exintro=1&explaintext=1&exchars=240&inprop=url&redirects=1&format=json`;
 
   const [exactRes, genRes] = await Promise.all([
     fetch(exactUrl, { headers: ua, signal: AbortSignal.timeout(4500) })
@@ -144,15 +176,15 @@ async function searchMoegirl(query, limit = 3) {
   for (const p of Object.values(exactRes?.query?.pages || {})) {
     if (p.missing !== undefined || !p.title) continue;
     const redir = redirects.find((r) => r.to === p.title);
-    const intro = String(p.extract || '').replace(/\s+/g, ' ').trim();
+    const bodySnippet = extractMoegirlMemeWindow(p.extract, redir?.from || cleanTerm, 260);
     const snippet = redir
-      ? `「${redir.from}」是萌娘百科关联梗/重定向词条「${p.title}」：${intro}`
-      : intro;
+      ? `「${redir.from}」是萌娘百科关联梗/重定向词条「${p.title}」：${bodySnippet}`
+      : bodySnippet;
     seen.add(p.title);
     results.push({
       title: `${p.title} - 萌娘百科`,
       url: p.fullurl || `https://zh.moegirl.org.cn/${encodeURIComponent(p.title)}`,
-      snippet: snippet.slice(0, 220),
+      snippet: snippet.slice(0, 280),
       exactMatch: true,
     });
   }

@@ -183,8 +183,8 @@ export function upsertSlangEntry({
     return { ok: false, error: '梗词条至少需要 2 个字' };
   }
   const cleanScope = String(scopeKey || 'global').trim() || 'global';
-  const cleanMeaning = String(meaning || '').replace(/\s+/g, ' ').trim().slice(0, 140);
-  const cleanGuide = String(replyGuide || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const cleanMeaning = String(meaning || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+  const cleanGuide = String(replyGuide || '').replace(/\s+/g, ' ').trim().slice(0, 140);
   const cleanAliases = (Array.isArray(aliases) ? aliases : String(aliases || '').split(/[,，/、|]/))
     .map((s) => String(s || '').trim())
     .filter((s) => s.length >= 2 && s !== cleanTerm)
@@ -343,14 +343,16 @@ export function findMatchingSlang(text, readScopes = ['global'], { maxHits = 2 }
   return picked;
 }
 
-/** 将命中的梗条目格式化为极简 Prompt 提示块（仅当轮注入，不落盘进 context.db） */
+/** 将命中的梗条目格式化为极简 Prompt 弹药块（仅当轮注入，不落盘进 context.db） */
 export function formatSlangForPrompt(entries = []) {
   if (!Array.isArray(entries) || entries.length === 0) return '';
   const lines = entries.map((e) => {
-    const guidePart = e.replyGuide ? `｜接法：${e.replyGuide}` : '｜接法：顺嘴玩梗或吐槽，禁科普出处';
+    const guidePart = e.replyGuide
+      ? `｜入戏接法：${e.replyGuide}`
+      : '｜入戏接法：直接钻进梗里接下半句、顺着演或反客为主吐槽';
     return `- 「${e.term}」：${e.meaning || '网络/群内热梗'}${guidePart}`;
   });
-  return `【本地梗库提示（仅供你瞬间秒懂接茬，严禁像百科一样科普出处、报歌名或番名）】\n${lines.join('\n')}`;
+  return `【本地梗库弹药（直接钻进梗里接下一拍：接下半句 / 顺着演 / 反客为主吐槽；严禁站在戏外点评“又在玩梗/经典老梗”，严禁科普出处报歌名番名）】\n${lines.join('\n')}`;
 }
 
 // ── 自动嗅梗：跳戏短语检测 + 24h 负缓存 + 联网确认后自动入库 ─────────────────────
@@ -499,7 +501,7 @@ export async function sniffAndLearnSlang({
     .replace(/https?:\/\/\S+/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 110);
+    .slice(0, 200);
   if (!summary) {
     recordMissCache(term);
     return null;
@@ -508,7 +510,7 @@ export async function sniffAndLearnSlang({
   const saved = upsertSlangEntry({
     term,
     meaning: summary,
-    replyGuide: '顺嘴玩梗、接下半句或自然吐槽，严禁像百科一样报出处、歌名或番名',
+    replyGuide: '直接钻进梗里接下半句、顺着画面演或反客为主吐槽，严禁戏外点评“又在玩梗”或报出处歌名番名',
     source: 'web',
     scopeKey: 'global',
   });
