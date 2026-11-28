@@ -16,7 +16,7 @@ import path from 'node:path';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 import { loadConfig } from './config.js';
 import { getBotRuntime, resolveBotResourcePath } from './runtime.js';
-import { configureContextFade, getContextDbPath } from './context-db.js';
+import { configureContextFade, getContextDbPath, getLastContextTsMs } from './context-db.js';
 import { configureMemoryDb, initMemoryDb, saveChatMessageToDb, updateChatMessageTextInDb } from './db.js';
 import {
   configureEmotion,
@@ -892,8 +892,9 @@ function isAllowedTarget(type, id) {
 }
 
 // 活跃追踪 + 群聊冒泡冷却 + 管理员独立冷却/连聊窗口 + 上句回声缓存 + 语义裁判冷却 + 防 AI 互怼死循环计数
+const bridgeStartedAt = Date.now();
 const lastActivityAt = new Map();
-const proactiveSentSinceLastActivity = new Set();
+const proactiveSentAt = new Map(); // chatKey -> 上次主动冒泡时间戳（收到对方消息立即清零，或超过 unansweredResetHours 自动解锁）
 const lastRandomReplyAt = new Map();
 const lastOwnerRandomReplyAt = new Map();
 const lastGroupBotReplyAt = new Map();
@@ -1009,7 +1010,7 @@ async function runHttpSemanticJudge(chatKey, senderLabel, incomingText) {
 
 function touchActivity(chatKey) {
   lastActivityAt.set(chatKey, Date.now());
-  proactiveSentSinceLastActivity.delete(chatKey);
+  proactiveSentAt.delete(chatKey);
 }
 
 /**
@@ -1272,10 +1273,42 @@ function describeTimeOfDay(date = new Date()) {
   return '晚上';
 }
 
+function logProactiveSkip(chatKey, reason) {
+  if (config.proactive?.logSkipped !== false) {
+    log(`[proactive] 跳过 ${chatKey} (${reason})`);
+  }
+}
+
+function isProactiveLocked(chatKey, now = Date.now()) {
+  const sentAt = proactiveSentAt.get(chatKey) || 0;
+  if (!sentAt) return false;
+  const resetHours = Number(config.proactive?.unansweredResetHours ?? 12);
+  if (resetHours <= 0) return true; // <=0 表示严格锁到对方回复为止
+  return now - sentAt < resetHours * 3600 * 1000;
+}
+
+/** 启动时从本地 context.db 与 sync-state.json 恢复真实上次活跃时间，避免一重启就归零重算冷场 */
+function restoreLastActivityAt(chatKey) {
+  const now = Date.now();
+  let best = getLastContextTsMs(chatKey);
+  try {
+    const syncPath = path.join(ROOT, 'state', 'sync-state.json');
+    if (fs.existsSync(syncPath)) {
+      const parsed = JSON.parse(fs.readFileSync(syncPath, 'utf8'));
+      const sec = Number(parsed?.lastHandled?.[chatKey]?.ts || 0);
+      if (Number.isFinite(sec) && sec > 0) {
+        best = Math.max(best, Math.round(sec * 1000));
+      }
+    }
+  } catch {}
+  if (best > 0) return Math.min(best, now);
+  return now;
+}
+
 function scheduleProactiveCheck(chatKey, targetEvent) {
   if (!config.proactive?.enabled) return;
-  const minMs = Number(config.proactive?.checkIntervalMinMs ?? 1800000);
-  const maxMs = Number(config.proactive?.checkIntervalMaxMs ?? 3600000);
+  const minMs = Math.max(60000, Number(config.proactive?.checkIntervalMinMs ?? 900000));
+  const maxMs = Math.max(minMs, Number(config.proactive?.checkIntervalMaxMs ?? 1500000));
   const delay = minMs + Math.floor(Math.random() * Math.max(1000, maxMs - minMs));
 
   setTimeout(async () => {
@@ -1290,22 +1323,57 @@ function scheduleProactiveCheck(chatKey, targetEvent) {
 }
 
 async function maybeSendProactive(chatKey, targetEvent) {
-  if (!wsConnected) return;
-  if (isQuietHour()) return;
-  if (proactiveSentSinceLastActivity.has(chatKey)) return; // 对方没回之前不连环发
+  const now = Date.now();
+  if (!wsConnected) {
+    logProactiveSkip(chatKey, 'WebSocket 未连接');
+    return;
+  }
+  if (isQuietHour()) {
+    logProactiveSkip(chatKey, `夜间免打扰 ${config.proactive?.quietStartHour ?? 23}:00~${config.proactive?.quietEndHour ?? 8}:00`);
+    return;
+  }
+  const graceMs = Math.max(0, Number(config.proactive?.startupGraceMs ?? 600000));
+  if (graceMs > 0 && now - bridgeStartedAt < graceMs) {
+    const remainMin = Math.ceil((graceMs - (now - bridgeStartedAt)) / 60000);
+    logProactiveSkip(chatKey, `启动保护期剩约 ${remainMin} 分`);
+    return;
+  }
+  if (isProactiveLocked(chatKey, now)) {
+    const sentAt = proactiveSentAt.get(chatKey) || now;
+    const waitedH = ((now - sentAt) / 3600000).toFixed(1);
+    const resetH = Number(config.proactive?.unansweredResetHours ?? 12);
+    logProactiveSkip(chatKey, `上次主动消息尚未回复，锁定中(${waitedH}/${resetH > 0 ? `${resetH}h` : '∞'})`);
+    return;
+  }
 
-  const idleThresholdMs = Number(config.proactive?.idleThresholdMs ?? 2700000);
+  const idleThresholdMs = Math.max(60000, Number(config.proactive?.idleThresholdMs ?? 2700000));
   const last = lastActivityAt.get(chatKey) || 0;
-  if (Date.now() - last < idleThresholdMs) return;
+  const idleMs = now - last;
+  if (idleMs < idleThresholdMs) {
+    logProactiveSkip(chatKey, `冷场 ${Math.floor(idleMs / 60000)}/${Math.round(idleThresholdMs / 60000)} 分`);
+    return;
+  }
 
+  // 冷场越久主动意愿越高：刚满阈值走基础概率，超 2 倍阈值涨至 >=65%，超 4 倍阈值涨至 >=85%，杜绝连黑数小时
   let prob = Number(config.proactive?.probability ?? 0.35);
+  if (idleMs >= idleThresholdMs * 4) {
+    prob = Math.max(prob, 0.85);
+  } else if (idleMs >= idleThresholdMs * 2) {
+    prob = Math.max(prob, 0.65);
+  }
   // 好感度与心情联动主动意愿：心情极低落或关系疏远时减少主动打扰，开心且亲近时略微更主动
   if (targetEvent.message_type === 'private' && config.emotion?.enabled !== false) {
     const emo = getEmotionSnapshot();
-    if (emo.mood <= -20 || emo.affection < 30) return;
-    if (emo.mood >= 20 && emo.affection >= 65) prob = Math.min(0.75, prob * 1.3);
+    if (emo.mood <= -20 || emo.affection < 30) {
+      logProactiveSkip(chatKey, `当前情绪/好感暂不适合打扰(mood=${emo.mood}, aff=${emo.affection})`);
+      return;
+    }
+    if (emo.mood >= 20 && emo.affection >= 65) prob = Math.min(0.9, prob * 1.25);
   }
-  if (Math.random() >= prob) return;
+  if (Math.random() >= prob) {
+    logProactiveSkip(chatKey, `概率未中 ${Math.round(prob * 100)}%，已冷场 ${Math.floor(idleMs / 60000)} 分`);
+    return;
+  }
 
   const wakeCat = targetEvent.message_type === 'group' ? 'group_auto' : 'private';
   const wakeCheck = safetyGuard.checkAndRecordWake(chatKey, wakeCat);
@@ -1315,9 +1383,10 @@ async function maybeSendProactive(chatKey, targetEvent) {
   }
 
   enqueue(chatKey, async () => {
-    if (proactiveSentSinceLastActivity.has(chatKey)) return;
-    proactiveSentSinceLastActivity.add(chatKey);
-    lastActivityAt.set(chatKey, Date.now());
+    const fireNow = Date.now();
+    if (isProactiveLocked(chatKey, fireNow)) return;
+    proactiveSentAt.set(chatKey, fireNow);
+    lastActivityAt.set(chatKey, fireNow);
 
     try {
       const nowStr = formatNow();
@@ -1335,7 +1404,10 @@ async function maybeSendProactive(chatKey, targetEvent) {
           const emoText = formatEmotionForPrompt();
           if (emoText) emoBlock = `\n${emoText}`;
         } else if (isTrustedGroup) {
-          const moodText = formatMoodForPrompt({ inGroup: true });
+          const moodText = formatMoodForPrompt({ inGroup: true, includeHint: true });
+          if (moodText) emoBlock = `\n${moodText}`;
+        } else if (config.emotion?.syncMoodToExternalGroups !== false) {
+          const moodText = formatMoodForPrompt({ inGroup: true, maskReason: true, includeHint: false });
           if (moodText) emoBlock = `\n${moodText}`;
         }
       }
@@ -1357,7 +1429,7 @@ async function maybeSendProactive(chatKey, targetEvent) {
         : `群里安静好一会儿了，现在是${timeSlot}，你闲不住想主动冒个泡找大家唠嗑（可以随口抛个生活小脑洞、问问大家在干嘛、或者接着之前的话题逗逗大家）。自然简短，1~2句就行，别用“有人吗”这种气氛组话术。`;
 
       const prompt = `[当前时间: ${nowStr}] ${sceneTag}${emoBlock}${todoBlock}${recentBlock}\n（主动冒泡机会：${sceneHint}）`;
-      log(`触发主动找你聊: ${chatKey}`);
+      log(`触发主动找你聊: ${chatKey}（已冷场 ${Math.floor(idleMs / 60000)} 分，命中率 ${Math.round(prob * 100)}%）`);
 
       let directSent = false;
       const toolContext = {
@@ -1390,11 +1462,11 @@ async function maybeSendProactive(chatKey, targetEvent) {
         }
       } else {
         // 模型返回空且未通过工具发出：释放防连环锁，避免永久锁死
-        proactiveSentSinceLastActivity.delete(chatKey);
+        proactiveSentAt.delete(chatKey);
         log(`主动冒泡返回为空 (${chatKey})，已自动释放锁等待下次机会`);
       }
     } catch (err) {
-      proactiveSentSinceLastActivity.delete(chatKey);
+      proactiveSentAt.delete(chatKey);
       log(`主动冒泡发送失败 (${chatKey})，已自动释放锁:`, err?.message || err);
     }
   });
@@ -1409,8 +1481,10 @@ function startProactiveSchedulers() {
 
   if (config.proactive.privateEnabled !== false && config.ownerId) {
     const key = `private:${config.ownerId}`;
-    lastActivityAt.set(key, Date.now());
-    targets.push(key);
+    const restored = restoreLastActivityAt(key);
+    lastActivityAt.set(key, restored);
+    const idleMin = Math.floor((Date.now() - restored) / 60000);
+    targets.push(`${key}(已静默${idleMin}分)`);
     scheduleProactiveCheck(key, {
       message_type: 'private',
       user_id: config.ownerId,
@@ -1420,8 +1494,10 @@ function startProactiveSchedulers() {
 
   for (const gid of config.proactive.groupIds || []) {
     const key = `group:${gid}`;
-    lastActivityAt.set(key, Date.now());
-    targets.push(key);
+    const restored = restoreLastActivityAt(key);
+    lastActivityAt.set(key, restored);
+    const idleMin = Math.floor((Date.now() - restored) / 60000);
+    targets.push(`${key}(已静默${idleMin}分)`);
     scheduleProactiveCheck(key, {
       message_type: 'group',
       group_id: gid,
@@ -1431,11 +1507,13 @@ function startProactiveSchedulers() {
 
   if (targets.length > 0) {
     const idleMin = Math.round(Number(config.proactive.idleThresholdMs ?? 2700000) / 60000);
-    const minM = Math.round(Number(config.proactive.checkIntervalMinMs ?? 1800000) / 60000);
-    const maxM = Math.round(Number(config.proactive.checkIntervalMaxMs ?? 3600000) / 60000);
+    const minM = Math.round(Number(config.proactive.checkIntervalMinMs ?? 900000) / 60000);
+    const maxM = Math.round(Number(config.proactive.checkIntervalMaxMs ?? 1500000) / 60000);
+    const graceM = Math.round(Number(config.proactive.startupGraceMs ?? 600000) / 60000);
     const probPct = Math.round(Number(config.proactive.probability ?? 0.35) * 100);
+    const resetH = Number(config.proactive.unansweredResetHours ?? 12);
     log(
-      `已开启主动找你聊: ${targets.join(', ')}（冷场 ${idleMin}分 | 巡检 ${minM}~${maxM}分 | 概率 ${probPct}% | 免打扰 ${config.proactive.quietStartHour ?? 23}:00~${config.proactive.quietEndHour ?? 8}:00）`
+      `已开启主动找你聊: ${targets.join(', ')}（冷场 ${idleMin}分 | 巡检 ${minM}~${maxM}分 | 启动保护 ${graceM}分 | 概率 ${probPct}%→85%递增 | 未回解锁 ${resetH}h | 免打扰 ${config.proactive.quietStartHour ?? 23}:00~${config.proactive.quietEndHour ?? 8}:00）`
     );
   } else {
     log('主动找你聊已开启，但未配置目标会话（请检查 privateEnabled 与 proactive.groupIds）');

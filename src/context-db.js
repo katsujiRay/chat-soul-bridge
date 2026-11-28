@@ -140,3 +140,17 @@ export function clearContext(chatKey) {
   const db = getDb();
   db.prepare('DELETE FROM context_turns WHERE chat_key = ?').run(String(chatKey));
 }
+
+/** 查询某个会话在本地短期上下文中的最后发言时间戳（毫秒；无记录返回 0） */
+export function getLastContextTsMs(chatKey) {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT MAX(ts) AS last_ts FROM context_turns WHERE chat_key = ?')
+      .get(String(chatKey));
+    const sec = Number(row?.last_ts || 0);
+    return Number.isFinite(sec) && sec > 0 ? Math.round(sec * 1000) : 0;
+  } catch {
+    return 0;
+  }
+}

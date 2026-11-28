@@ -184,16 +184,19 @@
   },
 
   "proactive": {
-    "_comment": "【10. 定时冷场主动冒泡】enabled=总开关; privateEnabled=是否允许私聊管理员冒泡; groupIds=允许主动冒泡的群号列表; idleThresholdMs=冷场多久才考虑冒泡(默认45分钟); checkIntervalMinMs/MaxMs=随机巡检间隔(默认30~60分钟); probability=触发概率; quietStartHour/EndHour=夜间免打扰时段(23点~次日8点,期间不冒泡且7天待办确认自动推迟到次日早8点后)",
+    "_comment": "【10. 定时冷场主动冒泡】enabled=总开关; privateEnabled=是否允许私聊管理员冒泡; groupIds=允许主动冒泡的群号列表; idleThresholdMs=冷场多久才考虑冒泡(默认45分钟); checkIntervalMinMs/MaxMs=随机巡检间隔(默认15~25分钟); startupGraceMs=重启启动保护期(默认10分钟,不重置历史冷场时间); probability=基础触发概率(默认0.35,冷场超2倍/4倍阈值自动递增至65%/85%防连黑); unansweredResetHours=发过1次对方未回时几小时后自动解锁(默认12小时,次日可再问候,<=0表示锁到回复为止); quietStartHour/EndHour=夜间免打扰时段(23点~次日8点); logSkipped=巡检跳过时打印原因日志",
     "enabled": false,
     "privateEnabled": true,
     "groupIds": [],
     "idleThresholdMs": 2700000,
-    "checkIntervalMinMs": 1800000,
-    "checkIntervalMaxMs": 3600000,
+    "checkIntervalMinMs": 900000,
+    "checkIntervalMaxMs": 1500000,
+    "startupGraceMs": 600000,
     "probability": 0.35,
+    "unansweredResetHours": 12,
     "quietStartHour": 23,
-    "quietEndHour": 8
+    "quietEndHour": 8,
+    "logSkipped": true
   },
 
   "contextFade": {
