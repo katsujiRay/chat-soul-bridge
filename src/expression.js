@@ -281,6 +281,7 @@ export function decideExpressionHint({
   mood = 0,
   memeDir = '',
   expressionConfig = {},
+  isProactive = false,
 } = {}) {
   if (expressionConfig?.enabled === false) return '';
   const key = String(chatKey || '');
@@ -288,9 +289,9 @@ export function decideExpressionHint({
   chatTurnCounter.set(key, turn);
 
   const text = String(rawText || '').trim();
-  const explicitAsk = EXPLICIT_MEME_ASK_RE.test(text);
+  const explicitAsk = !isProactive && EXPLICIT_MEME_ASK_RE.test(text);
 
-  if (!explicitAsk && (Number(mood) <= -40 || SERIOUS_OR_DISTRESS_RE.test(text))) {
+  if (!explicitAsk && (Number(mood) <= -40 || (!isProactive && SERIOUS_OR_DISTRESS_RE.test(text)))) {
     return '';
   }
 
@@ -302,7 +303,7 @@ export function decideExpressionHint({
     const prevTurn = lastMemeSentTurn.get(key) ?? -999;
     const prevAt = lastMemeSentAt.get(key) || 0;
     const coolReady =
-      explicitAsk || (turn - prevTurn >= cooldownTurns && Date.now() - prevAt >= cooldownMs);
+      explicitAsk || isProactive || (turn - prevTurn >= cooldownTurns && Date.now() - prevAt >= cooldownMs);
 
     if (coolReady) {
       const { items, matchedTag } = pickRelevantMemes(
@@ -314,7 +315,11 @@ export function decideExpressionHint({
       if (items.length > 0) {
         const baseChance = Math.max(0, Math.min(1, Number(expressionConfig?.memeBaseChance ?? 0.28)));
         const boost = Math.max(0, Math.min(1, Number(expressionConfig?.memeTagMatchBoost ?? 0.45)));
-        const chance = explicitAsk ? 1 : Math.min(0.85, baseChance + (matchedTag ? boost : 0));
+        const chance = explicitAsk
+          ? 1
+          : isProactive
+            ? Math.min(0.65, baseChance + 0.15 + (matchedTag ? 0.15 : 0))
+            : Math.min(0.85, baseChance + (matchedTag ? boost : 0));
         if (Math.random() < chance) {
           const listStr = items
             .map((m) => {
@@ -322,8 +327,9 @@ export function decideExpressionHint({
               return brief ? `${m.stem}(${brief})` : m.stem;
             })
             .join('、');
+          const proExtra = isProactive ? '（主动破冰时也可以只丢 1 句短话配图，或者直接单丢一张贴景表情包）' : '';
           lines.push(
-            `【本轮适合顺手配张表情包（可选）】兜里有：${listStr}。若觉得贴景，直接在回复最后写 [meme:名字]（如 [meme:${items[0].stem}]）即可顺手发出真图，不贴景就别硬发。`
+            `【本轮适合顺手配张表情包（可选）】兜里有：${listStr}。若觉得贴景，直接在回复最后写 [meme:名字]（如 [meme:${items[0].stem}]）即可顺手发出真图，不贴景就别硬发${proExtra}。`
           );
         }
       }
@@ -333,11 +339,12 @@ export function decideExpressionHint({
   const emojiChance = Math.max(0, Math.min(1, Number(expressionConfig?.emojiChance ?? 0.38)));
   const lastEmojiTurn = lastEmojiHintTurn.get(key) ?? -999;
   const hasFunVibe =
+    isProactive ||
     (Array.isArray(slangHits) && slangHits.length > 0) ||
     SCENE_TO_TAG_HINTS.some((r) => r.re.test(text));
   const effEmojiChance = Math.min(0.75, emojiChance + (hasFunVibe ? 0.2 : 0));
 
-  if (turn - lastEmojiTurn >= 2 && Math.random() < effEmojiChance) {
+  if ((isProactive || turn - lastEmojiTurn >= 2) && Math.random() < effEmojiChance) {
     lastEmojiHintTurn.set(key, turn);
     const facePart =
       expressionConfig?.faceEnabled !== false

@@ -1486,7 +1486,20 @@ async function maybeSendProactive(chatKey, targetEvent) {
         ? `你和主人已经好一会儿没说话了，现在是${timeSlot}空闲时间，你突然想主动私聊找他聊两句（可以问问他在干嘛、分享个小念头、或者顺着待办小纸条或之前聊过的事随口问一句）。自然一点，1~2句短话就行，别用“在吗”这种机械开场白。`
         : `群里安静好一会儿了，现在是${timeSlot}，你闲不住想主动冒个泡找大家唠嗑（可以随口抛个生活小脑洞、问问大家在干嘛、或者接着之前的话题逗逗大家）。自然简短，1~2句就行，别用“有人吗”这种气氛组话术。`;
 
-      const prompt = `[当前时间: ${nowStr}] ${sceneTag}${emoBlock}${todoBlock}${recentBlock}\n（主动冒泡机会：${sceneHint}）`;
+      const exprHint =
+        config.expression?.enabled !== false
+          ? decideExpressionHint({
+              chatKey,
+              rawText: recent.slice(-2).map((m) => m.text).join(' '),
+              mood: config.emotion?.enabled !== false ? getEmotionSnapshot().mood : 0,
+              memeDir,
+              expressionConfig: config.expression,
+              isProactive: true,
+            })
+          : '';
+      const exprBlock = exprHint ? `\n${exprHint}` : '';
+
+      const prompt = `[当前时间: ${nowStr}] ${sceneTag}${emoBlock}${todoBlock}${recentBlock}${exprBlock}\n（主动冒泡机会：${sceneHint}）`;
       log(`触发主动找你聊: ${chatKey}（已冷场 ${Math.floor(idleMs / 60000)} 分，命中率 ${Math.round(prob * 100)}%）`);
 
       let directSent = false;
@@ -1508,7 +1521,7 @@ async function maybeSendProactive(chatKey, targetEvent) {
         await sendReply(targetEvent, reply);
         if (!isPrivate) {
           lastGroupBotReplyAt.set(String(targetEvent.group_id), Date.now());
-          lastGroupBotReplyText.set(String(targetEvent.group_id), reply.slice(0, 300));
+          lastGroupBotReplyText.set(String(targetEvent.group_id), stripInlineMemeTag(reply).slice(0, 300));
         }
         log(`主动发言 ${chatKey}: ${reply.slice(0, 80)}`);
       } else if (directSent) {
